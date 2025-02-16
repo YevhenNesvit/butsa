@@ -4,8 +4,6 @@ from selenium.webdriver.chrome.service import Service
 import os
 import dotenv
 from bs4 import BeautifulSoup
-import requests
-import time
 
 dotenv.load_dotenv()
 
@@ -103,7 +101,6 @@ def get_players(url, driver, data):
 
     for player in data[:4]:
         personal_url = "https://butsa.ru" + player[-1]
-        # time.sleep(5)
         driver.get(personal_url)
 
         html = driver.page_source
