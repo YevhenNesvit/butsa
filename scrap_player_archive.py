@@ -4,6 +4,7 @@ from selenium.webdriver.chrome.service import Service
 import os
 import dotenv
 from bs4 import BeautifulSoup
+import pandas as pd
 
 dotenv.load_dotenv()
 
@@ -84,7 +85,7 @@ def get_players_clean_data(
     return players_data[:-1]
 
 
-data = get_players_clean_data(url, driver, 4, "16", "16", "4", "4", "2025-01-16")
+data = get_players_clean_data(url, driver, 15, "16", "16", "4", "4", "2024-11-12")
 
 
 def get_players(driver, data):
@@ -105,5 +106,12 @@ def get_players(driver, data):
     players.append(data[0])
     return sorted(players, key=lambda x: x[1])
 
+def to_dataframe(driver, data):
 
-print(get_players(driver, data))
+    data = get_players(driver, data)
+
+    df = pd.DataFrame(data=data[:-1], columns=data[-1])
+    df = df.iloc[:, :-1]
+    df.to_csv("worker_players_4.csv", index=False)
+
+to_dataframe(driver, data)
