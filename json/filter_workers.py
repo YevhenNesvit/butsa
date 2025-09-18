@@ -74,7 +74,7 @@ players_df = spark.createDataFrame(data_list)
 # Фільтруємо гравців за критеріями
 filtered_players = players_df.filter(
     (players_df.aspectName == "Работяга")
-    & (players_df.age == 16)
+    & (players_df.age == 17)
     & (players_df.talent == 4)
 )
 
