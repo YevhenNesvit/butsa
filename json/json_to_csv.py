@@ -1,6 +1,7 @@
 import json
 import pandas as pd
 from pathlib import Path
+from data import unions   # імпортуємо словник divisionid → назва
 
 def flatten_dict(d, parent_key='', sep='_'):
     """
@@ -24,21 +25,38 @@ all_players = []
 for file in files:
     with open(file, encoding='utf-8') as f:
         data = json.load(f)
-    
-    country_name = data.get("name")
-    
-    for team_id, team in data.get("teams", {}).items():
+
+    club_country_id = data.get("id")
+    club_country_name = data.get("name")
+
+    for team_key, team in data.get("teams", {}).items():
+        team_id = team.get("id") or team_key
         team_name = team.get("name")
-        
-        for player_id, player in team.get("players", {}).items():
-            # flatten всі поля гравця
+        team_divisionid = team.get("divisionid")
+        team_divisiontype = team.get("divisiontype")
+
+        # шукаємо назву дивізіону у словнику unions
+        division_name = None
+        if team_divisionid and team_divisionid.isdigit():
+            division_name = unions.get(int(team_divisionid))
+
+        for player_key, player in team.get("players", {}).items():
             flat_player = flatten_dict(player)
-            # додаємо країну та команду
-            flat_player["country"] = country_name
-            flat_player["team"] = team_name
+
+            # дані країни клубу
+            flat_player["club_country_id"] = club_country_id
+            flat_player["club_country_name"] = club_country_name
+
+            # дані команди
+            flat_player["team_id"] = team_id
+            flat_player["team_name"] = team_name
+            flat_player["team_divisionid"] = team_divisionid
+            flat_player["team_divisiontype"] = team_divisiontype
+            flat_player["team_division_name"] = division_name
+
             all_players.append(flat_player)
 
 df = pd.DataFrame(all_players)
 
 # Зберігаємо в CSV
-df.to_csv("json/responses/players_flat_all.csv", index=False, encoding='utf-8')
+df.to_csv("json/responses/all_players.csv", index=False, encoding='utf-8')

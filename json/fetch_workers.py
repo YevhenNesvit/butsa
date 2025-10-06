@@ -21,7 +21,7 @@ def fetch_and_save_country_data(country_id):
 
         # Зберігаємо оновлений текст у файл
         with open(
-            f"json/responses/country_{country_id}.txt", "w", encoding="utf-8"
+            f"json/responses/country_{country_id}.json", "w", encoding="utf-8"
         ) as f:
             f.write(content)
         print(f"Дані для країни {country_id} збережено")
