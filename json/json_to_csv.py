@@ -58,5 +58,17 @@ for file in files:
 
 df = pd.DataFrame(all_players)
 
+trans_df = pd.read_csv('json/responses/transfer_players.csv', dtype=str)
+
+df["id"] = df["id"].astype(str).str.strip()
+trans_ids = set(trans_df["id"].astype(str).str.strip())
+
+ids_to_update = set(trans_df["id"])
+mask = df["id"].isin(ids_to_update)
+df.loc[mask, "transfer"] = 2
+
+print("Унікальних ID:", trans_df["id"].nunique())
+print(df['transfer'].value_counts(dropna=False))
+
 # Зберігаємо в CSV
 df.to_csv("json/responses/all_players.csv", index=False, encoding='utf-8')
