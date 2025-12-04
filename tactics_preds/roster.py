@@ -1,4 +1,3 @@
-import pandas as pd
 import json
 import os
 
@@ -6,17 +5,19 @@ import os
 # 1. ВХІДНІ ДАНІ
 # ==========================================
 CONTEXT = {
-    'tournament_cap': 1800,   
-    'is_opponent_home': True, 
+    'tournament_cap': 800,   
+    'is_opponent_home': True, # True = Суперник вдома (+4 моралі)
     'match_type': 'club'      
 }
 
-ROSTER_FILE = 'opponent_roster.json'
+ROSTER_FILE = 'tactics_preds/opponent_roster.json'
 
+# ТВОЯ КОМАНДА (Вкажи свої РЕАЛЬНІ сили, а не номінальні, якщо можеш)
 MY_TEAM = {
-    'def': 464, 'mid': 658, 'att': 526, 'stamina': 100 
+    'def': 212, 'mid': 161, 'att': 358, 'stamina': 97
 }
 
+# --- ЗАВАНТАЖЕННЯ ---
 if not os.path.exists(ROSTER_FILE):
     print(f"❌ Файл '{ROSTER_FILE}' не знайдено!")
     exit()
@@ -24,7 +25,7 @@ if not os.path.exists(ROSTER_FILE):
 with open(ROSTER_FILE, 'r', encoding='utf-8') as f:
     raw_data = json.load(f)
 
-# Чистка дублікатів у самому файлі (на всяк випадок)
+# Чистка дублікатів
 roster_data = []
 seen = set()
 for p in raw_data:
@@ -34,16 +35,34 @@ for p in raw_data:
 
 formations = {
     '3-4-3': {'def': 3, 'mid': 4, 'att': 3},
-    '3-5-2': {'def': 3, 'mid': 5, 'att': 2},
-    '4-4-2': {'def': 4, 'mid': 4, 'att': 2},
-    '4-3-3': {'def': 4, 'mid': 3, 'att': 3},
-    '4-5-1': {'def': 4, 'mid': 5, 'att': 1},
-    '5-3-2': {'def': 5, 'mid': 3, 'att': 2},
-    '5-4-1': {'def': 5, 'mid': 4, 'att': 1}
+    # '3-5-2': {'def': 3, 'mid': 5, 'att': 2},
+    # '4-4-2': {'def': 4, 'mid': 4, 'att': 2},
+    # '4-3-3': {'def': 4, 'mid': 3, 'att': 3},
+    # '4-5-1': {'def': 4, 'mid': 5, 'att': 1},
+    # '5-3-2': {'def': 5, 'mid': 3, 'att': 2},
+    # '5-4-1': {'def': 5, 'mid': 4, 'att': 1}
 }
 
 # ==========================================
-# 2. АЛГОРИТМ ЗАМІН (ВИПРАВЛЕНИЙ)
+# 2. МАТЕМАТИКА REAL POWER
+# ==========================================
+def calculate_real_power(player, context):
+    base_power = player['power']
+    stamina = player.get('stamina', 100)
+    morale = player.get('morale', 13) 
+    stamina_mult = stamina / 100.0
+    home_bonus = 4 if (context['is_opponent_home'] and context['match_type'] == 'club') else 0
+    current_morale = morale + home_bonus
+    morale_mult = 1.0 + (current_morale - 13) * 0.004
+    return base_power * stamina_mult * morale_mult
+
+for p in roster_data:
+    p['real_power'] = calculate_real_power(p, CONTEXT)
+    # Гарантуємо, що поле minutes існує
+    if 'minutes' not in p: p['minutes'] = 0
+
+# ==========================================
+# 3. АЛГОРИТМ ЗАМІН (ПРІОРИТЕТ: ХВИЛИНИ)
 # ==========================================
 def get_valid_pos_list(line_name):
     if line_name == 'gk': return ['GK']
@@ -53,220 +72,268 @@ def get_valid_pos_list(line_name):
     return []
 
 def solve_cap_puzzle(roster, formation, cap):
-    """
-    Алгоритм послідовного заповнення (без дублікатів).
-    """
-    # 1. Структури
     starters = {'gk': [], 'def': [], 'mid': [], 'att': []}
     used_names = set()
 
-    # Сортуємо весь ростер за силою
-    sorted_roster = sorted(roster, key=lambda x: x['power'], reverse=True)
+    # --- [ГОЛОВНА ЗМІНА] Сортування ---
+    # 1. Minutes (Descending)
+    # 2. Real Power (Descending) - як тай-брейкер
+    sorted_roster = sorted(roster, key=lambda x: (x.get('minutes', 0), x['real_power']), reverse=True)
 
-    # 2. Послідовне заповнення ліній
-    # Пріоритет: GK -> DEF -> MID -> ATT
-    order_of_fill = [
-        ('gk', 1),
-        ('def', formation['def']),
-        ('mid', formation['mid']),
-        ('att', formation['att'])
-    ]
-
+    # 1. Формування основи (хто більше грає)
+    order_of_fill = [('gk', 1), ('def', formation['def']), ('mid', formation['mid']), ('att', formation['att'])]
+    
     for line_name, needed_count in order_of_fill:
         count = 0
         valid_positions = get_valid_pos_list(line_name)
-        
         for p in sorted_roster:
             if count >= needed_count: break
-            
-            # --- ВИПРАВЛЕННЯ: Пропускаємо, якщо вже взяли ---
             if p['name'] in used_names: continue 
-            
             if any(pos in p['pos'] for pos in valid_positions):
                 starters[line_name].append(p)
                 used_names.add(p['name'])
                 count += 1
 
-    # 3. Формуємо лавку (тільки ті, хто вільний)
+    # 2. Формування лавки (теж сортуємо за хвилинами, щоб міняти на "найближчого" гравця основи)
     bench = [p for p in sorted_roster if p['name'] not in used_names]
 
-    def calc_total():
-        return sum(p['power'] for line in starters.values() for p in line)
+    def calc_nominal_total(sq_dict):
+        return sum(p['power'] for line in sq_dict.values() for p in line)
+    def calc_real_total(sq_dict):
+        return sum(p['real_power'] for line in sq_dict.values() for p in line)
 
-    current_total = calc_total()
+    current_nominal = calc_nominal_total(starters)
 
-    # 4. Оптимізація (Заміни під ліміт)
+    # 3. Оптимізація під ліміт
+    # Якщо основа (ті, хто завжди грають) не влазить у ліміт, значить тренер когось ротує.
+    # Ми шукаємо заміну, яка допоможе влізти в ліміт.
     loop_limit = 0
-    while current_total > cap and loop_limit < 200:
+    while current_nominal > cap and loop_limit < 200:
         best_swap = None
-        min_loss = 9999
+        min_real_loss = 9999
         
         for line_name in ['gk', 'def', 'mid', 'att']:
             line_starters = starters[line_name]
             valid_pos = get_valid_pos_list(line_name)
-            
-            # Шукаємо кандидата на лавці
-            line_bench_candidates = [b for b in bench if any(vp in b['pos'] for vp in valid_pos)]
+            line_bench = [b for b in bench if any(vp in b['pos'] for vp in valid_pos)]
             
             for i, starter in enumerate(line_starters):
-                for sub in line_bench_candidates:
-                    diff = starter['power'] - sub['power']
-                    # Шукаємо заміну, що зменшує силу (diff > 0)
-                    if diff > 0 and diff < min_loss:
-                        min_loss = diff
-                        best_swap = (line_name, i, starter, sub)
+                for sub in line_bench:
+                    nominal_diff = starter['power'] - sub['power']
+                    
+                    if nominal_diff > 0: # Заміна допомагає ліміту
+                        # Тут ми все одно дивимось на Real Power, бо нам треба зберегти силу команди.
+                        # Але оскільки 'starter' має більше хвилин, ми намагаємось його залишити,
+                        # якщо є інший варіант.
+                        # (В простій версії просто шукаємо min_real_loss)
+                        real_diff = starter['real_power'] - sub['real_power']
+                        
+                        if real_diff < min_real_loss:
+                            min_real_loss = real_diff
+                            best_swap = (line_name, i, starter, sub)
         
         if best_swap:
-            line_name, idx, out_p, in_p = best_swap
+            line, idx, out_p, in_p = best_swap
+            starters[line][idx] = in_p
             
-            # Заміна
-            starters[line_name][idx] = in_p
+            used_names.remove(out_p['name']); used_names.add(in_p['name'])
+            bench.remove(in_p); bench.append(out_p)
             
-            # Оновлюємо списки
-            used_names.remove(out_p['name'])
-            used_names.add(in_p['name'])
+            # Лавку пересортовуємо, щоб наступним кандидатом був найкращий з решти
+            bench.sort(key=lambda x: (x.get('minutes', 0), x['real_power']), reverse=True)
             
-            bench.remove(in_p)
-            bench.append(out_p)
-            bench.sort(key=lambda x: x['power'], reverse=True)
-            
-            current_total = calc_total()
+            current_nominal = calc_nominal_total(starters)
             loop_limit += 1
-        else:
-            break
+        else: break
 
-    # Повертаємо і суми, і структуру складу для візуалізації
     full_squad_list = starters['gk'] + starters['def'] + starters['mid'] + starters['att']
-    
     return {
-        'total': current_total, 
-        'def': sum(p['power'] for p in starters['def']), 
-        'mid': sum(p['power'] for p in starters['mid']), 
-        'att': sum(p['power'] for p in starters['att']),
-        'squad_dict': starters, # <--- Словник для візуалізації
-        'squad_list': full_squad_list
+        'nominal': current_nominal,
+        'real_total': calc_real_total(starters),
+        'def': sum(p['real_power'] for p in starters['def']), 
+        'mid': sum(p['real_power'] for p in starters['mid']), 
+        'att': sum(p['real_power'] for p in starters['att']),
+        'squad_dict': starters, 'squad_list': full_squad_list
     }
 
-def analyze_geometry(squad_list):
-    wide_count = 0
-    for p in squad_list:
-        is_wide = False
-        for pos in p['pos']:
-            if pos in ['LD', 'RD', 'LM', 'RM', 'LW', 'RW']:
-                is_wide = True; break
-        if is_wide: wide_count += 1
-    return wide_count
+# ==========================================
+# 4. АНАЛІЗ ЗАГРОЗ (CF / Wingers)
+# ==========================================
+def analyze_threats(squad_dict):
+    c_threat = 0 # CF
+    w_threat = 0 # Winger
+    
+    # 1. Атака (Ліміт вінгерів = 2)
+    att_wide_count = 0
+    for p in squad_dict['att']:
+        if 'CF' in p['pos']: c_threat += 1
+        elif any(x in p['pos'] for x in ['LW', 'RW', 'LF', 'RF']): att_wide_count += 1
+    w_threat += min(att_wide_count, 2) # Не більше 2 вінгерів
+
+    # 2. Півзахист (Ліміт вінгерів = 2)
+    mid_wide_count = 0
+    for p in squad_dict['mid']:
+        if any(x in p['pos'] for x in ['LM', 'RM']): mid_wide_count += 1
+    w_threat += min(mid_wide_count, 2) # Не більше 2 вінгерів
+            
+    return c_threat, w_threat
 
 # ==========================================
-# 4. РОЗРАХУНОК
+# 5. РОЗРАХУНОК (З урахуванням хвилин)
 # ==========================================
-bonus_mult = 1.016 if (CONTEXT['is_opponent_home'] and CONTEXT['match_type'] == 'club') else 1.0
 results = []
+print(f"\n⚙️  Аналіз (Minutes Priority). Ліміт: {CONTEXT['tournament_cap']}")
 
-for form_name, form_struct in formations.items():
-    res = solve_cap_puzzle(roster_data, form_struct, CONTEXT['tournament_cap'])
-    w_count = analyze_geometry(res['squad_list'])
+for fname, fstruct in formations.items():
+    res = solve_cap_puzzle(roster_data, fstruct, CONTEXT['tournament_cap'])
+    c, w = analyze_threats(res['squad_dict'])
+    
+    # Рахуємо "Імовірність схеми" за сумою хвилин гравців у старті
+    total_minutes_on_pitch = sum(p['minutes'] for p in res['squad_list'])
     
     results.append({
-        'name': form_name, 
-        'total': res['total'], 
-        'wide_players': w_count,
-        'm_def': res['def'] * bonus_mult, 
-        'm_mid': res['mid'] * bonus_mult, 
-        'm_att': res['att'] * bonus_mult,
-        'squad_dict': res['squad_dict'], # Зберігаємо для виводу
-        'squad_list': res['squad_list']
+        'name': fname, 'res': res, 'c': c, 'w': w, 
+        'total_mins': total_minutes_on_pitch
     })
 
-results.sort(key=lambda x: x['total'], reverse=True)
-best_opp = results[0] 
+# Сортуємо: 
+# 1. За сумарними хвилинами (схема, якою грають частіше)
+# 2. За реальною силою
+results.sort(key=lambda x: (x['total_mins'], x['res']['real_total']), reverse=True)
+best_scenario = results[0]
+best_opp = best_scenario['res']
 
 # ==========================================
-# 5. ВІЗУАЛІЗАЦІЯ СКЛАДУ (ДОДАНО)
+# 6. ВІЗУАЛІЗАЦІЯ
 # ==========================================
 print("\n" + "="*60)
-print(f"🏆 ПРОГНОЗОВАНИЙ СКЛАД СУПЕРНИКА ({best_opp['name']})")
-print(f"   Сума сили (Номінал): {best_opp['total']}")
+print(f"🏆 ПРОГНОЗ: {best_scenario['name']}")
+print(f"   Досвід складу (сума хвилин): {best_scenario['total_mins']}")
+print(f"   Номінал: {best_opp['nominal']} / {CONTEXT['tournament_cap']}")
+print(f"   REAL POWER: {best_opp['real_total']:.1f}")
 print("-" * 60)
 
 def print_line(label, players):
-    names = [f"{p['name']} [{p['power']}]" for p in players]
-    print(f"{label:<4} : {', '.join(names)}")
+    # Додав вивід хвилин
+    data = [f"{p['name']} [{p['minutes']}хв|{p['power']}]" for p in players]
+    print(f"{label:<4}: {', '.join(data)}")
 
 s = best_opp['squad_dict']
 print_line("GK", s['gk'])
 print_line("DEF", s['def'])
 print_line("MID", s['mid'])
 print_line("ATT", s['att'])
-
-# Перевірка на унікальність
-unique_players = set(p['name'] for p in best_opp['squad_list'])
-if len(unique_players) == 11:
-    print(f"\n✅ Перевірка пройдена: 11 унікальних гравців.")
-else:
-    print(f"\n⚠️ УВАГА: Знайдено дублікати! ({len(unique_players)} гравців)")
 print("="*60)
 
 # ==========================================
-# 6. ГЕНЕРАЦІЯ РІШЕНЬ
+# 7. ТРЕНЕРСЬКІ РІШЕННЯ (SCALING FIX)
 # ==========================================
-# 1. ТАКТИКА
 my_tot = sum([MY_TEAM['def'], MY_TEAM['mid'], MY_TEAM['att']])
-opp_tot = best_opp['m_def'] + best_opp['m_mid'] + best_opp['m_att']
-power_ratio = my_tot / opp_tot
+opp_tot = best_opp['real_total'] - best_opp['squad_dict']['gk'][0]['real_power']
+power_diff = my_tot - opp_tot
 
-tactic_val = 50
-if power_ratio > 1.05: tactic_val = 70
-elif power_ratio < 0.95: tactic_val = 30
-if CONTEXT['is_opponent_home']: tactic_val -= 10
-else: tactic_val += 10
-tactic_val = max(11, min(92, tactic_val))
-tactic_desc = "Атака" if tactic_val >= 60 else "Захист" if tactic_val <= 40 else "Норма"
+# 1. ТАКТИКА (Плавна шкала)
+# 0 різниці = 50. -100 різниці = 30.
+base_tactic = 50 + (power_diff * 0.2)
+
+if CONTEXT['is_opponent_home']: base_tactic -= 11
+else: base_tactic += 11
+
+# LOCK: Якщо 3 CF -> Не більше 50
+cfs = best_scenario['c']
+if cfs >= 3 and base_tactic > 50:
+    base_tactic = 50
+    t_desc = "Норма (Lock: 3 CF)"
+else:
+    t_desc = "Розрахункова"
+
+tactic_val = max(11, min(92, base_tactic))
+if tactic_val > 60: t_desc += " -> Атака"
+elif tactic_val < 41: t_desc += " -> Захист"
+else: t_desc += " -> Баланс"
 
 # 2. ПАСИ
-mid_ratio = MY_TEAM['mid'] / best_opp['m_mid']
-passing = "Змішані"; pass_reason = "Рівна гра"
-if mid_ratio > 1.05: passing = "Короткі"; pass_reason = "Мід він"
-elif mid_ratio < 0.95: passing = "Дальні"; pass_reason = "Мід луз"
-if tactic_val < 41 and passing == "Короткі": passing = "Змішані"; pass_reason += " (Safety)"
+mid_ratio = MY_TEAM['mid'] / best_opp['mid']
+passing = "Змішані"; p_reason = "Рівна гра"
+if mid_ratio > 1.11: passing = "Короткі"; p_reason = "Виграємо центр"
+elif mid_ratio < 0.92: passing = "Дальні"; p_reason = "Програємо центр"
+# Safety: При захисті завжди граємо простіше
+if tactic_val < 41 and passing == "Короткі": passing = "Змішані"; p_reason += " (Safety)"
+# Underdog: Якщо ми значно слабші, тільки дальні
+if power_diff < -50: passing = "Дальні"; p_reason = "Underdog (Виніс)"
 
 # 3. СТРАТЕГІЯ
-att_ratio = MY_TEAM['att'] / best_opp['m_def']
-strategy = "Нормальна"; strat_reason = "Баланс"
-if mid_ratio < 0.95: strategy = "Дальні удари"; strat_reason = "Мало м'яча"
-elif att_ratio > 1.10: strategy = "Технічна гра"; strat_reason = "Слабкий захист"
-elif mid_ratio > 1.05 and passing == "Короткі": strategy = "Гра в пас"; strat_reason = "Контроль"
+att_ratio = MY_TEAM['att'] / best_opp['def'] # Наш напад vs Їх захист
+strat = "Нормальна"
+s_reason = "Баланс"
 
-# 4. ЩІЛЬНІСТЬ
-dens_in = 50; w_reason = "База"
-if best_opp['wide_players'] >= 2: dens_in -= 20; w_reason = "Широкий суперник"
-else: dens_in += 20; w_reason = "Вузький суперник"
-strikers = len(s['att'])
-if strikers >= 3: dens_in += 29; w_reason += ", 3 Форварди!"
-elif strikers == 1: dens_in -= 11
+if mid_ratio < 0.92: 
+    strat = "Дальні удари"
+    s_reason = "Без м'яча -> Б'ємо при нагоді"
+
+elif att_ratio > 1.19: 
+    strat = "Технічна гра"
+    s_reason = "Слабкий захист ворога -> Дриблінг"
+
+elif mid_ratio > 1.10 and passing == "Короткі": 
+    # ТУТ БУЛА ПОМИЛКА: Ми радили "Гру в пас" тільки через перевагу в центрі.
+    # АЛЕ якщо напад слабкий (як у вас 361), "Гра в пас" призведе до втрат.
+    
+    if att_ratio < 0.83: # Наш напад слабший за їх захист
+        strat = "Дальні удари" 
+        s_reason = "Центр наш, але Напад слабкий -> Б'ємо здалеку"
+    else:
+        strat = "Гра в пас"
+        s_reason = "Контроль м'яча + Сильний напад"
+
+# 4. ЩІЛЬНІСТЬ У ЛІНІЇ
+dens_in = 50 
+wings = best_scenario['w']
+dens_in = 50 + (cfs * 20) - (wings * 15)
+w_reason = f"{cfs} CF vs {wings} Wing"
+
+if best_opp['att'] > MY_TEAM['def']:
+    dens_in += 11; w_reason += " + Def Weakness"
+
+if cfs >= 3: dens_in = max(dens_in, 65) 
 dens_in = max(11, min(92, dens_in))
 
-# 5. ГЛИБИНА
+# --- 5. ЩІЛЬНІСТЬ МІЖ ЛІНІЯМИ (ВИПРАВЛЕНО) ---
 dens_btwn = 50; d_reason = "База"
-if mid_ratio < 0.95: dens_btwn -= 15; d_reason = "Сідаємо"
-elif mid_ratio > 1.05: dens_btwn += 15; d_reason = "Піднімаємось"
-if tactic_val < 41: dens_btwn = min(dens_btwn, 35)
+
+if mid_ratio < 0.95: 
+    dens_btwn += 11; d_reason = "Програли центр -> Всі назад (Compact)"
+elif mid_ratio > 1.05: 
+    dens_btwn -= 11; d_reason = "Виграли центр -> Півзахист в атаку"
+
+# ANTI-COUNTER (Якщо 3 CF -> Максимальна компактність)
+if cfs >= 3:
+    # Ми НЕ можемо лишати захисників самих. Кличемо всіх назад.
+    dens_btwn = max(dens_btwn, 83) 
+    d_reason = "3 CF -> Бетон (Всі назад до захисту!)"
+
+# Якщо тактика захисна (Автобус) -> Тим паче всі назад
+if tactic_val < 41: 
+    dens_btwn = max(dens_btwn, 74)
+    d_reason += " + Автобус (Compact Defense)"
+
 dens_btwn = max(11, min(92, dens_btwn))
 
 # 6. ПРЕСИНГ
-press = "ВИКЛ"; press_reason = "Економія"
-if MY_TEAM['stamina'] < 92: press = "ВИКЛ"; press_reason = "Мало сил"
-elif tactic_val >= 65: press = "ВКЛ"; press_reason = "Агресія"
-elif not CONTEXT['is_opponent_home'] and power_ratio > 1.1: press = "ВКЛ"
+press = "НІ"
+# Вмикаємо пресинг, тільки якщо ми сильніші АБО якщо треба ламати гру (Underdog)
+if MY_TEAM['stamina'] >= 95:
+    if tactic_val > 60: press = "ТАК (Атака)"
+    elif power_diff < -50: press = "ТАК (Underdog Chance)"
 
-# ВИВІД ТАБЛИЦІ
-print(f"📊 Сила: Ми {my_tot} vs Вони {opp_tot:.0f} (Ratio {power_ratio:.2f})")
-print(f"🔸 Центр: Ми {MY_TEAM['mid']} vs Вони {best_opp['m_mid']:.0f} (Ratio {mid_ratio:.2f})")
+# ВИВІД
+print(f"📊 БАЛАНС: Ми {my_tot} vs Вони {opp_tot:.0f} (Diff: {power_diff:.1f})")
+print(f"🔸 ЦЕНТР: Ми {MY_TEAM['mid']} vs Вони {best_opp['mid']:.0f} (Ratio {mid_ratio:.2f})")
 print("-" * 60)
-print(f"{'1. СТРАТЕГІЯ':<25} | [{strategy.upper()}] ({strat_reason})")
-print(f"{'2. ПАСИ':<25} | [{passing.upper()}] ({pass_reason})")
-print(f"{'3. ТАКТИКА':<25} | [{tactic_val:.0f}] ({tactic_desc})")
-print(f"{'4. ЩІЛ. В ЛІНІЇ':<25} | [{dens_in:.0f}] ({w_reason})")
-print(f"{'5. ЩІЛ. МІЖ ЛІН':<25} | [{dens_btwn:.0f}] ({d_reason})")
-print(f"{'6. ПРЕСИНГ':<25} | [{press}] ({press_reason})")
+print(f"{'1. СТРАТЕГІЯ':<20} | [{strat.upper()}] ({s_reason})")
+print(f"{'2. ПАСИ':<20} | [{passing.upper()}] ({p_reason})")
+print(f"{'3. ТАКТИКА':<20} | [{tactic_val:.0f}] ({t_desc})")
+print(f"{'4. ЩІЛ. В ЛІНІЇ':<20} | [{dens_in:.0f}] ({w_reason})")
+print(f"{'5. ЩІЛ. МІЖ ЛІН':<20} | [{dens_btwn:.0f}] ({d_reason})")
+print(f"{'6. ПРЕСИНГ':<20} | [{press}]")
 print("="*60)
