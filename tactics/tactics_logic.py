@@ -20,7 +20,7 @@ def get_valid_pos_list(line_name):
     Повертає список валідних позицій для заданої лінії.
     """
     if line_name == 'gk': return ['GK']
-    if line_name == 'def': return ['CD', 'LD', 'RD', 'SW']
+    if line_name == 'def': return ['CD', 'LD', 'RD', 'SW', 'LWD', 'RWD']
     if line_name == 'mid': return ['CM', 'RM', 'LM', 'DM', 'AM']
     if line_name == 'att': return ['CF', 'LF', 'RF', 'LW', 'RW']
     return []
@@ -67,7 +67,7 @@ def solve_cap_puzzle(roster, formation, cap):
     curr_nom = calc_nom(starters)
     limit = 0
     
-    while curr_nom > cap and limit < 200:
+    while curr_nom > cap and limit < 210:
         best_swap = None
         min_loss = 9999
         
