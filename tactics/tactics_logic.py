@@ -28,25 +28,20 @@ def get_valid_pos_list(line_name):
 
 def solve_cap_puzzle(roster, formation, cap):
     """
-    Підбирає оптимальний склад під ліміт cap з урахуванням пріоритету хвилин.
-    
-    Args:
-        roster: Список гравців з характеристиками
-        formation: Словник {'def': N, 'mid': M, 'att': K}
-        cap: Ліміт номінальної сили
-    
-    Returns:
-        dict: Результати з номінальною і реальною силою, складом
+    Розумний підбір складу:
+    1. Набирає основу за хвилинами.
+    2. Якщо перебір (> Cap) -> міняє сильних на слабших.
+    3. Якщо недобір (< Cap) -> міняє слабких на сильних (UPGRADE).
     """
     starters = {'gk': [], 'def': [], 'mid': [], 'att': []}
     used_names = set()
     
-    # Сортування: 1. Хвилини, 2. Реальна сила
+    # 1. Сортування (Хвилини -> Сила)
     sorted_roster = sorted(roster, key=lambda x: (x.get('minutes', 0), x['real_power']), reverse=True)
 
     order = [('gk', 1), ('def', formation['def']), ('mid', formation['mid']), ('att', formation['att'])]
     
-    # 1. Основа
+    # --- ЕТАП 1: НАБІР БАЗИ (за досвідом) ---
     for line, count in order:
         c = 0
         valid = get_valid_pos_list(line)
@@ -57,44 +52,94 @@ def solve_cap_puzzle(roster, formation, cap):
                 starters[line].append(p)
                 used_names.add(p['name'])
                 c += 1
+        # Fallback (якщо не вистачило)
+        if c < count:
+             for p in sorted_roster:
+                if c >= count: break
+                if p['name'] in used_names: continue
+                if any(pos in p['pos'] for pos in valid):
+                    starters[line].append(p)
+                    used_names.add(p['name'])
+                    c += 1
 
-    # 2. Оптимізація
+    # Формуємо лавку
     bench = [p for p in sorted_roster if p['name'] not in used_names]
     
     def calc_nom(sq): return sum(p['power'] for l in sq.values() for p in l)
     def calc_real(sq): return sum(p['real_power'] for l in sq.values() for p in l)
 
     curr_nom = calc_nom(starters)
-    limit = 0
+    limit_loops = 0
     
-    while curr_nom > cap and limit < 210:
-        best_swap = None
-        min_loss = 9999
-        
-        for line in ['gk', 'def', 'mid', 'att']:
-            valid = get_valid_pos_list(line)
-            line_bench = [b for b in bench if any(vp in b['pos'] for vp in valid)]
+    # --- ЕТАП 2: ОПТИМІЗАЦІЯ (ДВОСТОРОННЯ) ---
+
+    # ВАРІАНТ А: ПЕРЕБІР (Треба зменшити силу)
+    if curr_nom > cap:
+        while curr_nom > cap and limit_loops < 200:
+            best_swap = None
+            min_real_loss = 9999
             
-            for i, start_p in enumerate(starters[line]):
-                for sub_p in line_bench:
-                    if start_p['power'] - sub_p['power'] > 0:
-                        loss = start_p['real_power'] - sub_p['real_power']
-                        if loss < min_loss:
-                            min_loss = loss
-                            best_swap = (line, i, start_p, sub_p)
-        
-        if best_swap:
-            l, idx, out_p, in_p = best_swap
-            starters[l][idx] = in_p
-            used_names.remove(out_p['name'])
-            used_names.add(in_p['name'])
-            bench.remove(in_p)
-            bench.append(out_p)
-            bench.sort(key=lambda x: (x.get('minutes', 0), x['real_power']), reverse=True)
-            curr_nom = calc_nom(starters)
-            limit += 1
-        else: break
-        
+            for line in ['gk', 'def', 'mid', 'att']:
+                valid = get_valid_pos_list(line)
+                line_bench = [b for b in bench if any(vp in b['pos'] for vp in valid)]
+                
+                for i, start_p in enumerate(starters[line]):
+                    for sub_p in line_bench:
+                        # Шукаємо заміну, яка ЗМЕНШУЄ номінал (start > sub)
+                        if start_p['power'] > sub_p['power']:
+                            real_loss = start_p['real_power'] - sub_p['real_power']
+                            # Мінімізуємо втрату реальної сили
+                            if real_loss < min_real_loss:
+                                min_real_loss = real_loss
+                                best_swap = (line, i, start_p, sub_p)
+            
+            if best_swap:
+                l, idx, out_p, in_p = best_swap
+                starters[l][idx] = in_p
+                used_names.remove(out_p['name']); used_names.add(in_p['name'])
+                bench.remove(in_p); bench.append(out_p)
+                bench.sort(key=lambda x: (x.get('minutes', 0), x['real_power']), reverse=True)
+                curr_nom = calc_nom(starters)
+                limit_loops += 1
+            else: break
+
+    # ВАРІАНТ Б: НЕДОБІР (UPGRADE - Цього не вистачало!)
+    # Якщо у нас є місце під лімітом, шукаємо кого підсилити
+    elif curr_nom < cap:
+        while limit_loops < 200:
+            best_swap = None
+            max_real_gain = 0.1 # Шукаємо хоч якийсь приріст
+            
+            for line in ['gk', 'def', 'mid', 'att']:
+                valid = get_valid_pos_list(line)
+                line_bench = [b for b in bench if any(vp in b['pos'] for vp in valid)]
+                
+                for i, start_p in enumerate(starters[line]):
+                    for sub_p in line_bench:
+                        # Шукаємо заміну, яка ЗБІЛЬШУЄ номінал (sub > start)
+                        diff_nom = sub_p['power'] - start_p['power']
+                        
+                        # Умова 1: Гравець сильніший
+                        # Умова 2: Ми все ще влазимо в CAP з цим гравцем
+                        if diff_nom > 0 and (curr_nom + diff_nom) <= cap:
+                            real_gain = sub_p['real_power'] - start_p['real_power']
+                            
+                            # Максимізуємо приріст реальної сили
+                            if real_gain > max_real_gain:
+                                max_real_gain = real_gain
+                                best_swap = (line, i, start_p, sub_p)
+            
+            if best_swap:
+                l, idx, out_p, in_p = best_swap
+                starters[l][idx] = in_p
+                used_names.remove(out_p['name']); used_names.add(in_p['name'])
+                bench.remove(in_p); bench.append(out_p)
+                # Пересортовувати лавку тут не обов'язково, але хай буде
+                bench.sort(key=lambda x: (x.get('minutes', 0), x['real_power']), reverse=True)
+                curr_nom = calc_nom(starters)
+                limit_loops += 1
+            else: break # Більше нікого не можна покращити, не пробивши стелю
+
     flat_list = starters['gk'] + starters['def'] + starters['mid'] + starters['att']
     return {
         'nominal': curr_nom,
