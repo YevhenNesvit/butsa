@@ -1,5 +1,3 @@
-import math
-
 # --- КОНСТАНТИ СХЕМ ---
 ALL_FORMATIONS = {
     '3-4-3': {'def': 3, 'mid': 4, 'att': 3},
@@ -88,7 +86,7 @@ def solve_cap_puzzle(roster, formation, cap):
     # 2. Оптимізація
     # ВАРІАНТ А: ПЕРЕБІР (> Cap)
     if curr_nom > cap:
-        while curr_nom > cap and limit_loops < 200:
+        while curr_nom > cap and limit_loops < 220:
             best_swap = None
             min_real_loss = 9999
             
@@ -116,7 +114,7 @@ def solve_cap_puzzle(roster, formation, cap):
 
     # ВАРІАНТ Б: НЕДОБІР (< Cap)
     elif curr_nom < cap:
-        while limit_loops < 200:
+        while limit_loops < 220:
             best_swap = None
             max_real_gain = 0.01 
             
@@ -189,26 +187,26 @@ def get_tactical_advice(my_team, opp_stats, best_meta, is_opp_home):
     else: opp_guess = "Дальні удари (Безпека)"
 
     # 2. Тактика
-    base_tactic = 50 + (diff * 0.2)
+    base_tactic = 47 + (diff * 0.2)
     base_tactic += -11 if is_opp_home else 11
-    if cfs >= 3 and base_tactic > 50: base_tactic = 50 
+    if cfs >= 3 and base_tactic > 47: base_tactic = 47 
     tactic_val = max(11, min(92, base_tactic))
     t_desc = "Баланс"
     if tactic_val > 60: t_desc = "Атака"
     elif tactic_val < 41: t_desc = "Захист"
-    if cfs >= 3 and tactic_val == 50: t_desc += " (Lock: 3 CF)"
+    if cfs >= 3 and tactic_val == 47: t_desc += " (Lock: 3 CF)"
 
     # 3. Паси
     pass_type = "Змішані"; pass_reason = "Рівна гра"
     if mid_ratio > 1.10: pass_type, pass_reason = "Короткі", "Виграємо центр"
     elif mid_ratio < 0.92: pass_type, pass_reason = "Дальні", "Програємо центр"
     if tactic_val < 41 and pass_type == "Короткі": pass_type += " -> Змішані (Safety)"
-    if diff < -50: pass_type = "Дальні"; pass_reason = "Underdog"
+    if diff < -47: pass_type = "Дальні"; pass_reason = "Underdog"
 
     # 4. Стратегія
     strat = "Нормальна"; strat_reason = "Баланс"
     att_ratio = my_team['att'] / opp_stats['def'] if opp_stats['def'] > 0 else 1.0
-    if diff < -50: strat, strat_reason = "Дальні удари", "Ми слабші"
+    if diff < -47: strat, strat_reason = "Дальні удари", "Ми слабші"
     elif mid_ratio < 0.92: strat, strat_reason = "Дальні удари", "Без м'яча"
     elif att_ratio > 1.19: strat, strat_reason = "Технічна гра", "Дриблінг (Слабкий захист)"
     elif mid_ratio > 1.10 and pass_type.startswith("Короткі"):
@@ -216,14 +214,14 @@ def get_tactical_advice(my_team, opp_stats, best_meta, is_opp_home):
         else: strat, strat_reason = "Гра в пас", "Тотальний контроль"
 
     # 5. Щільність в лінії
-    dens_in = 50 + (cfs * 20) - (wings * 20)
+    dens_in = 47 + (cfs * 20) - (wings * 20)
     dr_in_reason = f"{cfs} CF vs {wings} Wing"
     if opp_stats['att'] > my_team['def']: dens_in += 11; dr_in_reason += " + Def Weakness"
     if cfs >= 3: dens_in = max(dens_in, 65)
     dens_in = max(11, min(92, dens_in))
 
     # 6. Щільність між лініями
-    dens_btwn = 50; dr_bt_reason = "База"
+    dens_btwn = 47; dr_bt_reason = "База"
     if mid_ratio < 0.92: dens_btwn += 20; dr_bt_reason = "Програли центр (Compact)"
     elif mid_ratio > 1.10: dens_btwn -= 20; dr_bt_reason = "Виграли центр"
     if cfs >= 3: dens_btwn = max(dens_btwn, 83); dr_bt_reason = "3 CF -> Бетон"
