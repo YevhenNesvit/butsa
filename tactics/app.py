@@ -30,6 +30,8 @@ st.title("⚽ Butsa.pro Tactical Assistant (Squad Builder)")
 # Session State
 if 'my_roster' not in st.session_state: st.session_state.my_roster = []
 if 'opp_roster' not in st.session_state: st.session_state.opp_roster = []
+if 'my_team_name' not in st.session_state: st.session_state.my_team_name = ""
+if 'opp_team_name' not in st.session_state: st.session_state.opp_team_name = ""
 
 config = load_config()
 
@@ -72,7 +74,13 @@ col_me, col_opp = st.columns([1, 1])
 
 # --- МОЯ КОМАНДА ---
 with col_me:
-    st.header("🟢 Моя Команда")
+    header_text = f"🟢 Моя Команда: {st.session_state.my_team_name}" if st.session_state.my_team_name else "🟢 Моя Команда"
+    st.header(header_text)
+
+    if 'flash_msg_me' in st.session_state:
+        st.success(st.session_state.flash_msg_me)
+        del st.session_state.flash_msg_me
+
     my_roster_url = st.text_input("URL мого ростера", value=config.get("my_roster_url", ""), key="my_url_input")
     
     if st.button("📥 Завантажити мій склад"):
@@ -80,13 +88,15 @@ with col_me:
             st.error("Потрібен Cookie!")
         else:
             with st.spinner("Завантаження..."):
-                roster = scrape_roster(my_roster_url, cookie_input, tourn_input)
+                team_name, roster = scrape_roster(my_roster_url, cookie_input, tourn_input)
                 if roster:
+                    st.session_state.my_team_name = team_name
                     for p in roster:
                         p['nominal_power'] = lg.calculate_nominal_power(p, i_am_home)
                         p['real_power'] = lg.calculate_real_power(p, i_am_home)
                     st.session_state.my_roster = roster
-                    st.success(f"Завантажено {len(roster)} гравців!")
+                    st.session_state.flash_msg_me = f"Завантажено {len(roster)} гравців!"
+                    st.rerun()
                 else:
                     st.error("Помилка завантаження.")
 
@@ -138,7 +148,13 @@ with col_me:
 
 # --- СУПЕРНИК ---
 with col_opp:
-    st.header("🔴 Суперник")
+    header_text_opp = f"🔴 Суперник: {st.session_state.opp_team_name}" if st.session_state.opp_team_name else "🔴 Суперник"
+    st.header(header_text_opp)
+
+    if 'flash_msg' in st.session_state:
+        st.success(st.session_state.flash_msg)
+        del st.session_state.flash_msg
+
     opp_roster_url = st.text_input("URL ростера суперника")
     
     if st.button("🕵️ Аналізувати Суперника", type="primary"):
@@ -146,13 +162,16 @@ with col_opp:
             st.error("Потрібен URL та Cookie!")
         else:
             with st.spinner("Шпигуємо..."):
-                raw_roster = scrape_roster(opp_roster_url, cookie_input, tourn_input)
+                team_name, raw_roster = scrape_roster(opp_roster_url, cookie_input, tourn_input)
                 if raw_roster:
                     # Попередній розрахунок Nom/Real для суперника
+                    st.session_state.opp_team_name = team_name
                     for p in raw_roster:
                         p['nominal_power'] = lg.calculate_nominal_power(p, opponent_home)
                         p['real_power'] = lg.calculate_real_power(p, opponent_home)
                     st.session_state.opp_roster = raw_roster
+                    st.session_state.flash_msg = f"Завантажено {len(raw_roster)} гравців!"
+                    st.rerun()
                 else:
                     st.error("Помилка збору даних.")
 

@@ -51,6 +51,17 @@ def scrape_roster(url, cookie, tournament_name, progress_callback=None):
     soup = get_soup(url, cookie)
     if not soup: return []
 
+    team_name = "Команда"
+    team_label = soup.find('td', string=re.compile(r'^\s*Команда\s*$'))
+    if team_label:
+        # Знаходимо батьківський рядок <tr>
+        row = team_label.find_parent('tr')
+        if row:
+            # У цьому рядку шукаємо тег <span>, де лежить назва
+            span = row.find('span')
+            if span:
+                team_name = span.get_text(strip=True)
+
     links = soup.find_all('a', href=re.compile(r'/players/\d+$'))
     players = []
     processed_urls = set()
@@ -111,4 +122,4 @@ def scrape_roster(url, cookie, tournament_name, progress_callback=None):
         except Exception:
             continue
         
-    return players
+    return team_name, players
