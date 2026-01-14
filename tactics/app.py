@@ -212,10 +212,10 @@ if st.session_state.opp_roster and my_team_stats:
             st.write(f"**Nominal (Cap):** {opp_stats['nominal']:.1f}/{cap_input}")
             st.write(f"**Real Power:** {opp_stats['real_total']:.1f}")
             st.write("---")
-            st.write(f"**DEF ({opp_stats['def']:.0f}):** {', '.join([p['name'] for p in s['def']])}")
-            st.write(f"**MID ({opp_stats['mid']:.0f}):** {', '.join([p['name'] for p in s['mid']])}")
-            st.write(f"**ATT ({opp_stats['att']:.0f}):** {', '.join([p['name'] for p in s['att']])}")
-            if s['gk']: st.caption("GK: " + s['gk'][0]['name'])
+            st.write(f"**DEF ({opp_stats['def']:.1f}):** {', '.join([p['name'] for p in s['def']])}")
+            st.write(f"**MID ({opp_stats['mid']:.1f}):** {', '.join([p['name'] for p in s['mid']])}")
+            st.write(f"**ATT ({opp_stats['att']:.1f}):** {', '.join([p['name'] for p in s['att']])}")
+            if s['gk']: st.caption(f"GK ({s['gk'][0]['real_power']:.1f}): " + s['gk'][0]['name'])
 
         with col_res2:
             st.subheader("Рішення")
