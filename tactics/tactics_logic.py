@@ -178,6 +178,7 @@ def get_tactical_advice(my_team, opp_stats, best_meta, is_opp_home):
     
     cfs = best_meta['c']
     wings = best_meta['w']
+    if wings > 2: wings = 2
 
     # 1. Прогноз
     opp_guess = "Нормальна"
@@ -187,7 +188,10 @@ def get_tactical_advice(my_team, opp_stats, best_meta, is_opp_home):
     else: opp_guess = "Дальні удари (Безпека)"
 
     # 2. Тактика
-    base_tactic = 47 + (diff * 0.2)
+    if diff > 0:
+        base_tactic = 47 + (diff * 0.11)
+    else:
+        base_tactic = 47 + (diff * 0.2)
     base_tactic += -11 if is_opp_home else 11
     if cfs >= 3 and base_tactic > 47: base_tactic = 47 
     tactic_val = max(11, min(92, base_tactic))
