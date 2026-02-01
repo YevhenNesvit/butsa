@@ -123,7 +123,8 @@ with col_me:
         # Рахуємо Номінал (для ліміту) і Реал (для тактики)
         my_nom_total = (sum(p['nominal_power'] for p in sel_defs + sel_mids + sel_atts) + (sel_gk['nominal_power'] if sel_gk else 0))
         
-        my_def_pow = lg.calculate_line_power(sel_defs)
+        my_gk_pow = sel_gk['real_power'] if sel_gk else 0
+        my_def_pow = lg.calculate_line_power(sel_defs) + my_gk_pow
         my_mid_pow = lg.calculate_line_power(sel_mids)
         my_att_pow = lg.calculate_line_power(sel_atts)
         
@@ -133,7 +134,7 @@ with col_me:
         **Гравців:** {count_players}/11
         
         📊 **NOMINAL (Cap):** {my_nom_total:.1f} / {cap_input}
-        💪 **REAL POWER:** {(my_def_pow + my_mid_pow + my_att_pow + (sel_gk['real_power'] if sel_gk else 0)):.1f}
+        💪 **REAL POWER:** {(my_def_pow + my_mid_pow + my_att_pow):.1f}
         
         🛡️ **DEF:** {my_def_pow:.1f}  
         ⚙️ **MID:** {my_mid_pow:.1f}  

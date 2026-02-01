@@ -1,142 +1,112 @@
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
+import requests
 from bs4 import BeautifulSoup
-import os
-import dotenv
 import pandas as pd
 import time
 import json
+import os, dotenv
 
 dotenv.load_dotenv()
 
-# 1. Ініціалізація браузера
-service = Service("/home/yevhen/chromedriver-linux64/chromedriver")
-driver = webdriver.Chrome(service=service)
-url = "https://butsa.pro/xml/players/transfer.php"
+session = requests.Session()
 
-# 2. Логін (як у тебе)
-def login(driver):
-    driver.get(url)
-    username_input = driver.find_element(By.NAME, "auth_name")
-    password_input = driver.find_element(By.NAME, "auth_pass")
-    username_input.send_keys(os.getenv("USERNAME"))
-    password_input.send_keys(os.getenv("PASSWORD"))
-    login_button = driver.find_element(By.NAME, "imageField")
-    login_button.click()
-    time.sleep(3)
+headers = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64)",
+    "Referer": "https://butsa.pro/",
+    "Origin": "https://butsa.pro"
+}
+session.headers.update(headers)
+
+login_data = {
+    "auth_name": os.getenv("USERNAME"),
+    "auth_pass": os.getenv("PASSWORD"),
+    "imageField": "Login"
+}
+
+resp = session.post(
+    "https://butsa.pro/xml/players/transfer.php",
+    data=login_data,
+    allow_redirects=True
+)
+
+print("LOGIN STATUS:", resp.status_code)
+print("COOKIES:", session.cookies)
 
 # 3. Збір гравців — поліпшена версія з надійними умовами зупинки
-def scrape_players(driver, save_every=1):
+def scrape_players(session, save_every=1):
     all_players = []
-    seen_ids = set()            # всі зібрані id
+    seen_ids = set()
     page = 1
-    empty_page_streak = 0       # підряд порожніх сторінок
-    repeat_page_streak = 0      # підряд сторінок без НОВИХ id
-    max_pages = 2000            # жорсткий ліміт (постав менше, якщо хочеш)
-    retries_on_error = 0
-    max_retries = 3
+    empty_page_streak = 0
+    repeat_page_streak = 0
+    max_pages = 2000
 
     os.makedirs("json/responses", exist_ok=True)
 
     while True:
         if page > max_pages:
-            print(f"🚫 Досягнуто max_pages ({max_pages}) — зупинка.")
+            print("🚫 max_pages досягнуто")
             break
 
         url_page = f"https://butsa.pro/xml/players/transfer.php?page={page}&type=players/transfer&act=select"
-        print(f"🔍 Обробка сторінки {page} -> {url_page}")
-        try:
-            driver.get(url_page)
-            time.sleep(1.5)  # даємо сторінці підвантажитись
+        print(f"🔍 Page {page}")
 
-            html = driver.page_source
-            soup = BeautifulSoup(html, "html.parser")
+        r = session.get(url_page, timeout=15)
 
-            table = soup.find("table", class_="maintable")
-            if not table:
-                print("⚠️ Таблиця не знайдена на сторінці.")
+        if r.status_code != 200:
+            print(f"⚠️ HTTP {r.status_code}")
+            break
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        table = soup.find("table", class_="maintable")
+
+        if not table:
+            empty_page_streak += 1
+            repeat_page_streak += 1
+        else:
+            links = table.find_all("a", href=True)
+            page_players = []
+
+            for a in links:
+                href = a["href"]
+                if href.startswith("/players/"):
+                    pid = href.split("/players/")[-1].strip("/")
+                    name = a.get_text(strip=True)
+                    page_players.append({"id": pid, "name": name})
+
+            if not page_players:
                 empty_page_streak += 1
                 repeat_page_streak += 1
             else:
-                # знаходимо лише <a href="/players/...">
-                links = table.find_all("a", href=True)
-                page_players = []
-                for a in links:
-                    href = a["href"]
-                    if href.startswith("/players/"):
-                        pid = href.split("/players/")[-1].strip("/")
-                        name = a.get_text(strip=True)
-                        page_players.append({"id": pid, "name": name})
+                new_players = [p for p in page_players if p["id"] not in seen_ids]
 
-                # Якщо на сторінці немає ні одного такого лінку:
-                if not page_players:
-                    print("📭 На сторінці немає записів з /players/.")
-                    empty_page_streak += 1
+                if not new_players:
                     repeat_page_streak += 1
+                    empty_page_streak = 0
                 else:
-                    # відфільтровуємо тільки нові id
-                    new_players = [p for p in page_players if p["id"] not in seen_ids]
+                    for p in new_players:
+                        all_players.append(p)
+                        seen_ids.add(p["id"])
 
-                    if not new_players:
-                        # Є записи, але всі вони вже зібрані раніше
-                        repeat_page_streak += 1
-                        empty_page_streak = 0
-                        print(f"ℹ️ На сторінці {page} немає НОВИХ id (repeat streak {repeat_page_streak}).")
-                    else:
-                        # Додати нові
-                        for p in new_players:
-                            all_players.append(p)
-                            seen_ids.add(p["id"])
-                        print(f"✅ Знайдено {len(page_players)} на сторінці, нових {len(new_players)}. Всього зібрано: {len(all_players)}")
-                        # скидаємо лічильники
-                        empty_page_streak = 0
-                        repeat_page_streak = 0
+                    empty_page_streak = 0
+                    repeat_page_streak = 0
+                    print(f"✅ Нових: {len(new_players)}, всього: {len(all_players)}")
 
-            # Умови зупинки:
-            # - якщо X порожніх сторінок підряд
-            # - або Y сторінок підряд без нових id (повторення)
-            if empty_page_streak >= 2:
-                print(f"🚫 {empty_page_streak} порожніх сторінки(ів) підряд — припиняю.")
-                break
-            if repeat_page_streak >= 3:
-                print(f"🚫 {repeat_page_streak} сторінки(ів) підряд без нових id — припиняю.")
-                break
+        if empty_page_streak >= 2 or repeat_page_streak >= 3:
+            print("🚫 Умова зупинки")
+            break
 
-            # Збереження прогресу після кожної сторінки (контролюється save_every)
-            if page % save_every == 0:
-                tmp_path = f"json/responses/transfer_players_progress_page_{page}.json"
-                with open(tmp_path, "w", encoding="utf-8") as f:
-                    json.dump(all_players, f, ensure_ascii=False, indent=2)
-                print(f"💾 Проміжне збереження: {tmp_path}")
+        if page % save_every == 0:
+            with open(f"json/responses/progress_{page}.json", "w", encoding="utf-8") as f:
+                json.dump(all_players, f, ensure_ascii=False, indent=2)
 
-            # інкремент і невелика затримка
-            page += 1
-            time.sleep(1.0)
-            retries_on_error = 0  # успішна сторінка — скидаємо лічильник ретраїв
+        page += 1
+        time.sleep(0.5)
 
-        except Exception as e:
-            print(f"⚠️ Помилка при обробці сторінки {page}: {e}")
-            retries_on_error += 1
-            if retries_on_error > max_retries:
-                print("🚫 Перевищено max retries — зупинка.")
-                break
-            else:
-                wait = 3 * retries_on_error
-                print(f"⏳ Чекаю {wait}s і пробую ще раз ({retries_on_error}/{max_retries})...")
-                time.sleep(wait)
-                continue
-
-    # фінальне збереження
-    print(f"✅ Завершено. Збережено {len(all_players)} гравців.")
     return all_players
 
 # Запуск
 if __name__ == "__main__":
-    login(driver)
-    players = scrape_players(driver, save_every=1)
-    # також можна зберегти у CSV
-    df = pd.DataFrame(players)
-    df = df.drop_duplicates(subset=['id'])
+    players = scrape_players(session)
+
+    df = pd.DataFrame(players).drop_duplicates("id")
     df.to_csv("json/responses/transfer_players.csv", index=False, encoding="utf-8-sig")
-    driver.quit()
