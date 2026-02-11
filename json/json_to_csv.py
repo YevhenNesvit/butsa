@@ -61,6 +61,11 @@ df = pd.DataFrame(all_players)
 trans_df = pd.read_csv('json/responses/transfer_players.csv', dtype=str)
 
 df["id"] = df["id"].astype(str).str.strip()
+df = df.drop_duplicates(
+    subset=["id"],
+    keep="last"   # беремо останню команду (актуальну)
+)
+
 trans_ids = set(trans_df["id"].astype(str).str.strip())
 
 ids_to_update = set(trans_df["id"])

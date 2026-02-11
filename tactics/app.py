@@ -123,7 +123,8 @@ with col_me:
         # Рахуємо Номінал (для ліміту) і Реал (для тактики)
         my_nom_total = (sum(p['nominal_power'] for p in sel_defs + sel_mids + sel_atts) + (sel_gk['nominal_power'] if sel_gk else 0))
         
-        my_def_pow = lg.calculate_line_power(sel_defs)
+        my_gk_pow = sel_gk['real_power'] if sel_gk else 0
+        my_def_pow = lg.calculate_line_power(sel_defs) + my_gk_pow
         my_mid_pow = lg.calculate_line_power(sel_mids)
         my_att_pow = lg.calculate_line_power(sel_atts)
         
@@ -133,7 +134,7 @@ with col_me:
         **Гравців:** {count_players}/11
         
         📊 **NOMINAL (Cap):** {my_nom_total:.1f} / {cap_input}
-        💪 **REAL POWER:** {(my_def_pow + my_mid_pow + my_att_pow + (sel_gk['real_power'] if sel_gk else 0)):.1f}
+        💪 **REAL POWER:** {(my_def_pow + my_mid_pow + my_att_pow):.1f}
         
         🛡️ **DEF:** {my_def_pow:.1f}  
         ⚙️ **MID:** {my_mid_pow:.1f}  
@@ -231,12 +232,12 @@ if st.session_state.opp_roster and my_team_stats:
             st.warning(f"🔮 Очікуємо: **{advice['opp_guess']}**")
             
             table_data = [
-                ["Стратегія", advice['strat'].upper(), advice['strat_reason']],
                 ["Паси", advice['pass_type'].upper(), advice['pass_reason']],
-                ["Тактика", f"{advice['tactic_val']:.0f}", advice['t_desc']],
+                ["Стратегія", advice['strat'].upper(), advice['strat_reason']],
+                ["Пресинг", advice['press'], advice['press_reason']],
                 ["Щільн. в лінії", f"{advice['dens_in']:.0f}", advice['dr_in_reason']],
                 ["Щільн. між лін.", f"{advice['dens_btwn']:.0f}", advice['dr_bt_reason']],
-                ["Пресинг", advice['press'], advice['press_reason']]
+                ["Тактика", f"{advice['tactic_val']:.0f}", advice['t_desc']]
             ]
             df_advice = pd.DataFrame(table_data, columns=["Параметр", "Значення", "Логіка"])
             st.table(df_advice)

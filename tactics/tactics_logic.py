@@ -1,5 +1,7 @@
 # --- КОНСТАНТИ СХЕМ ---
 ALL_FORMATIONS = {
+    '2-5-3': {'def': 2, 'mid': 5, 'att': 3},
+    '2-6-2': {'def': 2, 'mid': 6, 'att': 2},
     '3-4-3': {'def': 3, 'mid': 4, 'att': 3},
     '3-5-2': {'def': 3, 'mid': 5, 'att': 2},
     '3-7-0': {'def': 3, 'mid': 7, 'att': 0},
@@ -7,8 +9,7 @@ ALL_FORMATIONS = {
     '4-3-3': {'def': 4, 'mid': 3, 'att': 3},
     '4-5-1': {'def': 4, 'mid': 5, 'att': 1},
     '5-3-2': {'def': 5, 'mid': 3, 'att': 2},
-    '5-4-1': {'def': 5, 'mid': 4, 'att': 1},
-    '2-5-3': {'def': 2, 'mid': 5, 'att': 3}
+    '5-4-1': {'def': 5, 'mid': 4, 'att': 1}
 }
 
 def calculate_nominal_power(player, is_home=False):
@@ -62,18 +63,62 @@ def solve_cap_puzzle(roster, formation, cap):
                 starters[line].append(p)
                 used_names.add(p['name'])
                 c += 1
-        # Fallback
-        if c < count:
-             for p in sorted_roster:
-                if c >= count: break
-                if p['name'] in used_names: continue
-                if any(pos in p['pos'] for pos in valid):
-                    starters[line].append(p)
-                    used_names.add(p['name'])
-                    c += 1
 
     bench = [p for p in sorted_roster if p['name'] not in used_names]
+
+    # --- ЕТАП 2: ПЕРЕБАЛАНСУВАННЯ (ЗАКРИВАЄМО ДІРКИ УНІВЕРСАЛАМИ) ---
+    # Намагаємося закрити нестачу в лініях за рахунок гравців з інших ліній, 
+    # які мають відповідну другу позицію.
     
+    for target_line in ['mid', 'def', 'att']: 
+        needed = formation[target_line]
+        
+        # Поки є нестача гравців
+        while len(starters[target_line]) < needed:
+            moved_someone = False
+            
+            # Шукаємо донора в інших лініях
+            for donor_line in ['def', 'mid', 'att']:
+                if donor_line == target_line: continue
+                # Якщо в донорській лінії немає гравців, пропускаємо
+                if not starters[donor_line]: continue 
+                
+                valid_target = get_valid_pos_list(target_line)
+                valid_donor = get_valid_pos_list(donor_line)
+                
+                # Шукаємо гравця в донорській лінії, який ВМІЄ грати в цільовій
+                for i, candidate in enumerate(starters[donor_line]):
+                    if any(pos in candidate['pos'] for pos in valid_target):
+                        
+                        # Тепер шукаємо, ким його замінити на старій позиції (СУВОРО по позиції)
+                        replacement = None
+                        for b in bench:
+                            if any(pos in b['pos'] for pos in valid_donor):
+                                replacement = b
+                                break
+                        
+                        # Якщо знайшли заміну, робимо рокіровку
+                        if replacement:
+                            starters[target_line].append(candidate)     # Переводимо в нову лінію
+                            starters[donor_line].pop(i)                 # Забираємо зі старої
+                            starters[donor_line].append(replacement)    # Ставимо заміну
+                            
+                            used_names.add(replacement['name'])
+                            bench.remove(replacement)
+                            
+                            moved_someone = True
+                            break # Починаємо спочатку (while), бо склад змінився
+                
+                if moved_someone: break 
+            
+            # Якщо нікого не вдалося перемістити, перериваємо (не добираємо "лівих")
+            if not moved_someone:
+                break 
+
+    # Оновлюємо та сортуємо лавку
+    bench = [p for p in sorted_roster if p['name'] not in used_names]
+    bench.sort(key=lambda x: (x.get('minutes', 0), x['real_power']), reverse=True)
+
     def calc_nom_total(sq): 
         return sum(p['nominal_power'] for l in sq.values() for p in l)
     
@@ -113,14 +158,15 @@ def solve_cap_puzzle(roster, formation, cap):
             else: break
 
     # ВАРІАНТ Б: НЕДОБІР (< Cap)
-    elif curr_nom < cap:
+    if curr_nom < cap:
         while limit_loops < 220:
             best_swap = None
             max_real_gain = 0.01 
             
             for line in ['gk', 'def', 'mid', 'att']:
                 valid = get_valid_pos_list(line)
-                line_bench = [b for b in bench if any(vp in b['pos'] for vp in valid)]
+                line_bench = sorted([b for b in bench if any(vp in b['pos'] for vp in valid)], 
+                                  key=lambda x: x['real_power'], reverse=True)
                 
                 for i, start_p in enumerate(starters[line]):
                     for sub_p in line_bench:
@@ -168,8 +214,7 @@ def analyze_threats(squad):
 
 def get_tactical_advice(my_team, opp_stats, best_meta, is_opp_home):
     my_tot = my_team['def'] + my_team['mid'] + my_team['att']
-    opp_gk_pow = opp_stats['squad_dict']['gk'][0]['real_power'] if opp_stats['squad_dict']['gk'] else 0
-    opp_field_pow = opp_stats['real_total'] - opp_gk_pow
+    opp_field_pow = opp_stats['real_total']
     diff = my_tot - opp_field_pow
     
     mid_ratio = my_team['mid'] / opp_stats['mid'] if opp_stats['mid'] > 0 else 1.0

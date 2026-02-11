@@ -8,9 +8,8 @@ import pandas as pd
 
 dotenv.load_dotenv()
 
-service = Service("/home/yevhen/chromedriver-linux64/chromedriver")
-driver = webdriver.Chrome(service=service)
-url = "https://www.butsa.ru/xml/players/transfer.php"
+driver = webdriver.Chrome()
+url = "https://www.butsa.pro/xml/players/transfer.php"
 
 
 def login_and_get_cookies(driver, url):
@@ -85,7 +84,7 @@ def get_players_clean_data(
     return players_data[:-1]
 
 
-data = get_players_clean_data(url, driver, 15, "16", "16", "4", "4", "2024-11-12")
+data = get_players_clean_data(url, driver, 5, "18", "18", "2", "2", "2025-08-16")
 
 
 def get_players(driver, data):
@@ -93,17 +92,24 @@ def get_players(driver, data):
     players = []
 
     for player in data:
-        personal_url = "https://butsa.ru" + player[-1]
+        personal_url = "https://butsa.pro" + player[-1]
         driver.get(personal_url)
 
         html = driver.page_source
         soup = BeautifulSoup(html, "html.parser")
 
         worker_element = soup.find("a", class_="green-help")
-        if worker_element and worker_element.get_text() == "Работяга":
+        if worker_element and worker_element.get_text() == "Долгожитель":
+            url_part = player[-1]
+            player_id = url_part.split("/players/")[1].split("&")[0]
+
+            player.insert(-1, player_id)
             players.append(player)
 
-    players.append(data[0])
+    header = data[0].copy()
+    header.insert(-1, "player_id")  # перед url
+    players.append(header)
+
     return sorted(players, key=lambda x: x[1])
 
 
@@ -113,7 +119,8 @@ def to_dataframe(driver, data):
 
     df = pd.DataFrame(data=data[:-1], columns=data[-1])
     df = df.iloc[:, :-1]
-    df.to_csv("worker_players_4.csv", index=False)
+    df = df.drop_duplicates(subset=["Игрок"], keep="last")
+    df.to_csv("longlife_players_2.csv", index=False, encoding="utf-8-sig")
 
 
 to_dataframe(driver, data)

@@ -9,7 +9,7 @@ os.makedirs("json/responses", exist_ok=True)
 
 
 def fetch_and_save_country_data(country_id):
-    url = f"https://www.butsa.ru/stats/countries_{country_id}.json"
+    url = f"https://www.butsa.pro/stats/countries_{country_id}.json"
     try:
         response = requests.get(url)
         response.raise_for_status()
