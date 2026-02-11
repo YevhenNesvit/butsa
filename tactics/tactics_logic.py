@@ -1,5 +1,7 @@
 # --- КОНСТАНТИ СХЕМ ---
 ALL_FORMATIONS = {
+    '2-5-3': {'def': 2, 'mid': 5, 'att': 3},
+    '2-6-2': {'def': 2, 'mid': 6, 'att': 2},
     '3-4-3': {'def': 3, 'mid': 4, 'att': 3},
     '3-5-2': {'def': 3, 'mid': 5, 'att': 2},
     '3-7-0': {'def': 3, 'mid': 7, 'att': 0},
@@ -7,8 +9,7 @@ ALL_FORMATIONS = {
     '4-3-3': {'def': 4, 'mid': 3, 'att': 3},
     '4-5-1': {'def': 4, 'mid': 5, 'att': 1},
     '5-3-2': {'def': 5, 'mid': 3, 'att': 2},
-    '5-4-1': {'def': 5, 'mid': 4, 'att': 1},
-    '2-5-3': {'def': 2, 'mid': 5, 'att': 3}
+    '5-4-1': {'def': 5, 'mid': 4, 'att': 1}
 }
 
 def calculate_nominal_power(player, is_home=False):

@@ -232,12 +232,12 @@ if st.session_state.opp_roster and my_team_stats:
             st.warning(f"🔮 Очікуємо: **{advice['opp_guess']}**")
             
             table_data = [
-                ["Стратегія", advice['strat'].upper(), advice['strat_reason']],
                 ["Паси", advice['pass_type'].upper(), advice['pass_reason']],
-                ["Тактика", f"{advice['tactic_val']:.0f}", advice['t_desc']],
+                ["Стратегія", advice['strat'].upper(), advice['strat_reason']],
+                ["Пресинг", advice['press'], advice['press_reason']],
                 ["Щільн. в лінії", f"{advice['dens_in']:.0f}", advice['dr_in_reason']],
                 ["Щільн. між лін.", f"{advice['dens_btwn']:.0f}", advice['dr_bt_reason']],
-                ["Пресинг", advice['press'], advice['press_reason']]
+                ["Тактика", f"{advice['tactic_val']:.0f}", advice['t_desc']]
             ]
             df_advice = pd.DataFrame(table_data, columns=["Параметр", "Значення", "Логіка"])
             st.table(df_advice)
