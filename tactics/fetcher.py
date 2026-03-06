@@ -4,7 +4,7 @@ import re
 import time
 
 # ==============================================================================
-# МОДУЛЬ ФЕТЧІНГУ ДАНИХ
+# МОДУЛЬ ФЕТЧІНГУ ДАНИХ (Хвилини + Бонуси)
 # ==============================================================================
 
 def get_soup(url, cookie):
@@ -22,42 +22,67 @@ def get_soup(url, cookie):
     return None
 
 
-def parse_player_minutes(player_url, cookie, target_tournament):
+def parse_player_details(player_url, cookie, target_tournament):
+    """
+    Заходить у профіль гравця і тягне:
+    1. Зіграні хвилини в турнірі.
+    2. Бонуси (Ск, Тх, Пл і т.д.).
+    """
     full_url = "https://butsa.pro" + player_url if not player_url.startswith("http") else player_url
     soup = get_soup(full_url, cookie)
     
-    if not soup: return 0
+    minutes = 0
+    bonuses = {}
+
+    if not soup: return 0, {}
+
+    # --- 1. ПАРСИНГ ХВИЛИН ---
     season_header = soup.find(string=re.compile("Текущий сезон"))
-    if not season_header: return 0
+    if season_header:
+        stats_table = season_header.find_next('table')
+        if stats_table:
+            rows = stats_table.find_all('tr')
+            idx_tourn, idx_mins = 2, 4
+            for row in rows:
+                cols = row.find_all('td')
+                if len(cols) <= idx_mins: continue
+                row_tourn_name = cols[idx_tourn].get_text(strip=True)
+                if target_tournament.lower() in row_tourn_name.lower():
+                    minutes_text = cols[idx_mins].get_text(strip=True)
+                    clean_mins = re.sub(r'\D', '', minutes_text)
+                    if clean_mins: minutes = int(clean_mins)
+                    break 
 
-    stats_table = season_header.find_next('table')
-    if not stats_table: return 0
+    # --- 2. ПАРСИНГ БОНУСІВ ---
+    # Шукаємо рядок, де в першій клітинці написано "Бонусы"
+    bonus_label = soup.find('td', string=re.compile(r'^\s*Бонусы\s*$'))
+    if bonus_label:
+        row = bonus_label.find_parent('tr')
+        if row:
+            bs = row.find_all('td')
+            if len(bs) > 1:
+                # Текст бонусів, наприклад "Ск4 Тх Пл2"
+                bonus_text = bs[1].get_text(strip=True)
+                
+                # Регулярка шукає пари: 2 літери + необов'язкова цифра
+                # Наприклад: ('Ск', '4'), ('Тх', '')
+                matches = re.findall(r'([А-Яа-я]{2})(\d?)', bonus_text)
+                for code, lvl in matches:
+                    level = int(lvl) if lvl else 1
+                    bonuses[code] = level
 
-    rows = stats_table.find_all('tr')
-    idx_tourn, idx_mins = 2, 4
-
-    for row in rows:
-        cols = row.find_all('td')
-        if len(cols) <= idx_mins: continue
-        row_tourn_name = cols[idx_tourn].get_text(strip=True)
-        if target_tournament.lower() in row_tourn_name.lower():
-            minutes_text = cols[idx_mins].get_text(strip=True)
-            clean_mins = re.sub(r'\D', '', minutes_text)
-            if clean_mins: return int(clean_mins)
-    return 0
+    return minutes, bonuses
 
 
 def scrape_roster(url, cookie, tournament_name, progress_callback=None):
     soup = get_soup(url, cookie)
-    if not soup: return []
+    if not soup: return "Помилка", []
 
     team_name = "Команда"
     team_label = soup.find('td', string=re.compile(r'^\s*Команда\s*$'))
     if team_label:
-        # Знаходимо батьківський рядок <tr>
         row = team_label.find_parent('tr')
         if row:
-            # У цьому рядку шукаємо тег <span>, де лежить назва
             span = row.find('span')
             if span:
                 team_name = span.get_text(strip=True)
@@ -87,26 +112,23 @@ def scrape_roster(url, cookie, tournament_name, progress_callback=None):
             p_val = int(re.sub(r'\D', '', cols[5].get_text(strip=True)))
             s_val = int(re.sub(r'\D', '', cols[7].get_text(strip=True)))
             
-            # --- ПЕРЕВІРКА ТРАВМИ ---
+            # Травми
             is_injured = False
-            # Шукаємо саме ту картинку, яку ви вказали
             injury_img = row.find('img', src=re.compile(r'injury\.gif'))
-            if injury_img:
-                is_injured = True
+            if injury_img: is_injured = True
             else:
-                # Додаткова перевірка по атрибуту title, про всяк випадок
                 for img in row.find_all('img'):
                     if img.get('title', '').lower() == 'травма' or img.get('alt', '').lower() == 'травма':
                         is_injured = True
                         break
-            # ------------------------
 
             m_td = cols[10]
             m_title = m_td.get('title', '') or (m_td.find('img').get('title', '') if m_td.find('img') else '')
             m_match = re.search(r'\((\d+)\)', m_title)
             mor_val = int(m_match.group(1)) if m_match else 13
 
-            mins = parse_player_minutes(href, cookie, tournament_name)
+            # [ЗМІНА] Викликаємо нову функцію, отримуємо і хвилини, і бонуси
+            mins, bonuses = parse_player_details(href, cookie, tournament_name)
 
             players.append({
                 "name": name,
@@ -115,7 +137,8 @@ def scrape_roster(url, cookie, tournament_name, progress_callback=None):
                 "stamina": s_val,
                 "morale": mor_val,
                 "minutes": mins,
-                "is_injured": is_injured  # Зберігаємо статус травми
+                "is_injured": is_injured,
+                "bonuses": bonuses  # Зберігаємо словник бонусів {'Ск': 4, 'Тх': 1}
             })
             time.sleep(0.1)
             
