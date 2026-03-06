@@ -120,7 +120,7 @@ def to_dataframe(driver, data):
     df = pd.DataFrame(data=data[:-1], columns=data[-1])
     df = df.iloc[:, :-1]
     df = df.drop_duplicates(subset=["Игрок"], keep="last")
-    df.to_csv("longlife_players_2.csv", index=False, encoding="utf-8-sig")
+    df.to_csv("json/responses/longlife_players_2.csv", index=False, encoding="utf-8-sig")
 
 
 to_dataframe(driver, data)

@@ -130,6 +130,13 @@ with col_me:
         
         count_players = 1 + len(sel_defs) + len(sel_mids) + len(sel_atts)
 
+        my_squad_dict = {
+            'gk': [sel_gk] if sel_gk else [],
+            'def': sel_defs,
+            'mid': sel_mids,
+            'att': sel_atts
+        }
+
         st.info(f"""
         **Гравців:** {count_players}/11
         
@@ -141,7 +148,7 @@ with col_me:
         ⚔️ **ATT:** {my_att_pow:.1f}
         """)
         
-        my_team_stats = {'def': my_def_pow, 'mid': my_mid_pow, 'att': my_att_pow, 'stamina': 100}
+        my_team_stats = {'def': my_def_pow, 'mid': my_mid_pow, 'att': my_att_pow, 'stamina': 100, 'squad_dict': my_squad_dict}
     else:
         st.warning("Спочатку завантажте свою команду.")
         my_team_stats = None
