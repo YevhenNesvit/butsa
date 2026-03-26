@@ -4,6 +4,7 @@ import os
 import pandas as pd
 from fetcher import scrape_roster
 import tactics_logic as lg  # Імпортуємо оновлений модуль логіки
+import match_engine as me
 
 # ==============================================================================
 # НАЛАШТУВАННЯ
@@ -237,6 +238,15 @@ if st.session_state.opp_roster and my_team_stats:
             
             st.markdown(f"**Diff:** {advice['diff']:.1f}")
             st.warning(f"🔮 Очікуємо: **{advice['opp_guess']}**")
+            opp_pred = advice['opp_predicted_tactic']
+            st.caption(
+                f"⚙️ **Деталі їхньої тактики (прогноз):**\n"
+                f"Паси: {opp_pred['pass_type']} | "
+                f"Пресинг: {opp_pred['press']} | "
+                f"Повзунок (Атк/Зах): {opp_pred['tactic_val']} | "
+                f"В лінію: {opp_pred['dens_in']} | "
+                f"Між лініями: {opp_pred['dens_btwn']}"
+            )
             
             table_data = [
                 ["Паси", advice['pass_type'].upper(), advice['pass_reason']],
@@ -248,3 +258,84 @@ if st.session_state.opp_roster and my_team_stats:
             ]
             df_advice = pd.DataFrame(table_data, columns=["Параметр", "Значення", "Логіка"])
             st.table(df_advice)
+            st.divider()
+        st.subheader("🤖 ШІ-Оптимізатор (Monte Carlo Brute-Force)")
+        st.write("Просимулювати всі можливі комбінації, щоб знайти 100% ідеальну тактику?")
+        
+        # ==========================================
+        # НАЛАШТУВАННЯ СИМУЛЯТОРА
+        # ==========================================
+        st.markdown("---")
+        st.subheader("⚙️ Режим симуляції")
+        
+        # Створюємо перемикач в інтерфейсі
+        robust_mode = st.toggle(
+            "🔥 Увімкнути Тотальний Аналіз (Робастна оптимізація)", 
+            value=False, 
+            help="Якщо увімкнено, ШІ тестуватиме ваші тактики проти 3000 можливих варіантів суперника. Це займає більше часу, але знаходить 'безсмертну' тактику. Якщо вимкнено — швидкий тест лише проти прогнозу Тренера."
+        )
+
+        # --- ПОЧАТОК НОВОГО БЛОКУ ДЛЯ УДАРІВ ---
+        st.write("**Темп гри (Активність команд)**")
+        st.caption("Введіть середню кількість ударів за матч для кожної команди. Симулятор сам вирахує кількість ігрових епізодів.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            my_shots = st.number_input("Ваші середні удари:", min_value=1, max_value=30, value=10, step=1)
+        with col2:
+            opp_shots = st.number_input("Удари суперника:", min_value=1, max_value=30, value=10, step=1)
+            
+        expected_total_shots = my_shots + opp_shots
+        min_chances = int(expected_total_shots * 0.83)
+        max_chances = int(expected_total_shots * 1.19)
+        
+        st.info(f"📊 Розрахований діапазон для рушія: від **{min_chances}** до **{max_chances}** ігрових епізодів.")
+
+        if st.button("🚀 Запустити Симуляцію", type="primary"):
+            with st.spinner("Граємо віртуальні матчі... Це може зайняти деякий час ⏳"):
+                
+                my_eng, opp_eng, _, _ = lg.prepare_engine_stats(my_team_stats, opp_stats, i_am_home, opponent_home)
+                
+                if my_eng['possession'] == 0 or my_eng['shot_power'] == 0:
+                    st.error(f"🚨 КРИТИЧНА ПОМИЛКА: Скіли гравців = 0! Парсер не зміг зайти в профілі.")
+                    st.stop()
+                
+                opp_predicted = advice['opp_predicted_tactic']
+
+                # ==========================================
+                # ЛОГІКА ПЕРЕМИКАЧА
+                # ==========================================
+                if robust_mode:
+                    st.warning("⚠️ УВІМКНЕНО ТОТАЛЬНИЙ АНАЛІЗ. ШІ прораховує 3000 ваших комбінацій проти 3000 тактик суперника. Зачекайте...")
+                    # Не передаємо 3-й аргумент -> Оптимізатор сам згенерує 3000 тактик!
+                    optimizer = me.TacticsOptimizer(my_eng, opp_eng, opp_tactics_input=None, min_c=min_chances, max_c=max_chances)
+                else:
+                    st.info(f"""
+                    🤖 **Швидка симуляція проти очікуваної гри суперника:**
+                    * **Стратегія:** {opp_predicted['strat']} | **Паси:** {opp_predicted['pass_type']} | **Пресинг:** {opp_predicted['press']}
+                    * **Тактика:** {opp_predicted['tactic_val']} | **Щільність:** {opp_predicted['dens_in']} / {opp_predicted['dens_btwn']}
+                    """)
+                    # Передаємо 3-й аргумент -> Оптимізатор б'ється тільки проти цієї 1 тактики!
+                    optimizer = me.TacticsOptimizer(my_eng, opp_eng, opp_tactics_input=opp_predicted, min_c=min_chances, max_c=max_chances)
+
+                # Запуск Монте-Карло
+                top_tactics = optimizer.find_best_tactic()
+                
+                st.success("✅ Симуляцію завершено!")
+                
+                # ==========================================
+                # ВИВІД РЕЗУЛЬТАТІВ ТОП-3
+                # ==========================================
+                cols = st.columns(3)
+                for i, res in enumerate(top_tactics):
+                    with cols[i]:
+                        c = res['combo']
+                        st.info(f"🏆 {i+1} МІСЦЕ\n\n**Шанс перемоги: {res['winrate']:.1f}%**")
+                        st.markdown(f"🎯 **Прогноз рахунку: {res.get('most_likely_score', '0:0')}** *(ймовірність {res.get('score_prob', 0):.0f}%)*")
+                        st.write(f"**Паси:** {c['pass_type']}")
+                        st.write(f"**Стратегія:** {c['strat']}")
+                        st.write(f"**Пресинг:** {c['press']}")
+                        st.write(f"**В лінію:** {c['dens_in']}")
+                        st.write(f"**Між лініями:** {c['dens_btwn']}")
+                        st.write(f"**Тактика:** {c['tactic_val']}")
+                        st.caption(f"Середні забиті голи: {res['avg_goals']:.2f}")

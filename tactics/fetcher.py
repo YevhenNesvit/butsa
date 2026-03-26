@@ -4,7 +4,7 @@ import re
 import time
 
 # ==============================================================================
-# МОДУЛЬ ФЕТЧІНГУ ДАНИХ (Хвилини + Бонуси)
+# МОДУЛЬ ФЕТЧІНГУ ДАНИХ (Хвилини + Бонуси + УМІННЯ)
 # ==============================================================================
 
 def get_soup(url, cookie):
@@ -21,20 +21,21 @@ def get_soup(url, cookie):
         print(f"Error fetching: {e}")
     return None
 
-
 def parse_player_details(player_url, cookie, target_tournament):
     """
     Заходить у профіль гравця і тягне:
-    1. Зіграні хвилини в турнірі.
-    2. Бонуси (Ск, Тх, Пл і т.д.).
+    1. Хвилини
+    2. Бонуси
+    3. Уміння (Скіли)
     """
     full_url = "https://butsa.pro" + player_url if not player_url.startswith("http") else player_url
     soup = get_soup(full_url, cookie)
     
     minutes = 0
     bonuses = {}
+    skills = {}
 
-    if not soup: return 0, {}
+    if not soup: return 0, {}, {}
 
     # --- 1. ПАРСИНГ ХВИЛИН ---
     season_header = soup.find(string=re.compile("Текущий сезон"))
@@ -54,24 +55,39 @@ def parse_player_details(player_url, cookie, target_tournament):
                     break 
 
     # --- 2. ПАРСИНГ БОНУСІВ ---
-    # Шукаємо рядок, де в першій клітинці написано "Бонусы"
     bonus_label = soup.find('td', string=re.compile(r'^\s*Бонусы\s*$'))
     if bonus_label:
         row = bonus_label.find_parent('tr')
         if row:
             bs = row.find_all('td')
             if len(bs) > 1:
-                # Текст бонусів, наприклад "Ск4 Тх Пл2"
                 bonus_text = bs[1].get_text(strip=True)
-                
-                # Регулярка шукає пари: 2 літери + необов'язкова цифра
-                # Наприклад: ('Ск', '4'), ('Тх', '')
                 matches = re.findall(r'([А-Яа-я]{2})(\d?)', bonus_text)
                 for code, lvl in matches:
                     level = int(lvl) if lvl else 1
                     bonuses[code] = level
 
-    return minutes, bonuses
+    # --- 3. ПАРСИНГ УМІНЬ ---
+    skill_names = [
+        "Отбор", "Опека", "Дриблинг", "Прием мяча", 
+        "Выносливость", "Пас", "Сила удара", "Точность удара", "Голкиперство"
+    ]
+    for s_name in skill_names:
+        # Шукаємо комірку з точною назвою уміння
+        s_td = soup.find('td', string=re.compile(rf'^\s*{s_name}\s*$'))
+        if s_td:
+            row = s_td.find_parent('tr')
+            if row:
+                tds = row.find_all('td')
+                if len(tds) >= 2:
+                    # Беремо останню комірку (це зазвичай ефективне значення з урахуванням бонусів)
+                    val_str = tds[1].get_text(strip=True).replace(',', '.')
+                    try:
+                        skills[s_name] = float(re.sub(r'[^\d.]', '', val_str))
+                    except ValueError:
+                        skills[s_name] = 0.0
+
+    return minutes, bonuses, skills
 
 
 def scrape_roster(url, cookie, tournament_name, progress_callback=None):
@@ -112,7 +128,6 @@ def scrape_roster(url, cookie, tournament_name, progress_callback=None):
             p_val = int(re.sub(r'\D', '', cols[5].get_text(strip=True)))
             s_val = int(re.sub(r'\D', '', cols[7].get_text(strip=True)))
             
-            # Травми
             is_injured = False
             injury_img = row.find('img', src=re.compile(r'injury\.gif'))
             if injury_img: is_injured = True
@@ -127,8 +142,8 @@ def scrape_roster(url, cookie, tournament_name, progress_callback=None):
             m_match = re.search(r'\((\d+)\)', m_title)
             mor_val = int(m_match.group(1)) if m_match else 13
 
-            # [ЗМІНА] Викликаємо нову функцію, отримуємо і хвилини, і бонуси
-            mins, bonuses = parse_player_details(href, cookie, tournament_name)
+            # [ЗМІНЕНО] Тепер розпаковуємо 3 змінні (включаючи skills)
+            mins, bonuses, skills = parse_player_details(href, cookie, tournament_name)
 
             players.append({
                 "name": name,
@@ -138,7 +153,8 @@ def scrape_roster(url, cookie, tournament_name, progress_callback=None):
                 "morale": mor_val,
                 "minutes": mins,
                 "is_injured": is_injured,
-                "bonuses": bonuses  # Зберігаємо словник бонусів {'Ск': 4, 'Тх': 1}
+                "bonuses": bonuses,
+                "skills": skills  # <--- Додали уміння
             })
             time.sleep(0.1)
             
