@@ -8,14 +8,14 @@ from joblib import Parallel, delayed
 # Вона має бути поза класами, щоб Windows міг передати її іншим ядрам процесора
 # =====================================================================
 def evaluate_tactic_worker(args):
-    my_t, opp_tactics_list, my_stats, opp_stats, iters_per_opp, min_c, max_c = args
+    my_t, opp_tactics_list, my_stats, opp_stats, iters_per_opp, min_c, max_c, tourn_coef = args
     
     total_wins = 0
     total_my_goals = 0
     master_score_counts = {}
     
     # [ОПТИМІЗАЦІЯ 1]: Створюємо стадіон ЛИШЕ ОДИН РАЗ!
-    engine = ButsaMatchEngine(my_stats, opp_stats, my_t, opp_tactics_list[0], min_c, max_c)
+    engine = ButsaMatchEngine(my_stats, opp_stats, my_t, opp_tactics_list[0], min_c, max_c, tourn_coef)
     
     for opp_t in opp_tactics_list:
         # Просто "перевдягаємо" тактику суперника без створення нового об'єкту
@@ -47,13 +47,14 @@ def evaluate_tactic_worker(args):
     }
 
 class ButsaMatchEngine:
-    def __init__(self, my_stats, opp_stats, my_tactics, opp_tactics, min_c, max_c):
+    def __init__(self, my_stats, opp_stats, my_tactics, opp_tactics, min_c, max_c, tourn_coef):
         self.my = my_stats
         self.opp = opp_stats
         self.t_my = my_tactics
         self.t_opp = opp_tactics
         self.min_c = min_c # Зберегли
         self.max_c = max_c # Зберегли
+        self.tourn_coef = tourn_coef
 
     def get_tactical_multipliers(self, is_me=True):
         t = self.t_my if is_me else self.t_opp
@@ -98,7 +99,7 @@ class ButsaMatchEngine:
             
         return atk_w, def_w, pass_mod, strat_mod, shot_boost
 
-    def simulate_match(self):
+    def simulate_match(self, debug_mode=False):
         my_goals, opp_goals = 0, 0
         total_chances = random.randint(self.min_c, self.max_c)
 
@@ -138,14 +139,53 @@ class ButsaMatchEngine:
         my_stam_val = self.my.get('stamina_eff', 0)
         opp_stam_val = self.opp.get('stamina_eff', 0)
         
-        my_drop_pct = max(0.04, (15.5 - (my_stam_val / 3.0)) / 100.0)
-        opp_drop_pct = max(0.04, (15.5 - (opp_stam_val / 3.0)) / 100.0)
+        # Базове падіння фізики за весь матч
+        my_drop_pct = max(0.04, (15.5 - (my_stam_val / 3.0)) / 100.0) * self.tourn_coef
+        opp_drop_pct = max(0.04, (15.5 - (opp_stam_val / 3.0)) / 100.0) * self.tourn_coef
+
+        # [НОВЕ] Накопичувачі втоми
+        my_current_fatigue = 0.0
+        opp_current_fatigue = 0.0
 
         for minute in range(total_chances):
-            my_stam_drop = 1.0 - ((minute / total_chances) * my_drop_pct)
-            opp_stam_drop = 1.0 - ((minute / total_chances) * opp_drop_pct)
+            # 1. РОЗУМНИЙ ПРЕСИНГ (За офіційними правилами Бутси)
+            score_diff = abs(my_goals - opp_goals)
+            
+            my_press_bonus = 1.0
+            my_press_penalty = 1.0
+            if self.t_my['press'] == 'ТАК':
+                if score_diff < 2:
+                    my_press_bonus = 1.10   # Максимальний тиск в атаці
+                    my_press_penalty = 1.50 # Максимальна втрата фізики (ті самі +50%)
+                else:
+                    my_press_bonus = 1.0   # Розслабились (рахунок дозволяє)
+                    my_press_penalty = 1.0 # Економлять сили
 
-            # 1. ЦЕНТР ПОЛЯ: Володіння
+            opp_press_bonus = 1.0
+            opp_press_penalty = 1.0
+            if self.t_opp['press'] == 'ТАК':
+                if score_diff < 2:
+                    opp_press_bonus = 1.10
+                    opp_press_penalty = 1.50
+                else:
+                    opp_press_bonus = 1.0
+                    opp_press_penalty = 1.0
+
+            # Накопичуємо втому епізод за епізодом
+            my_current_fatigue += (my_drop_pct / total_chances) * my_press_penalty
+            opp_current_fatigue += (opp_drop_pct / total_chances) * opp_press_penalty
+
+            # Скільки сил залишилося прямо зараз
+            my_stam_drop = max(0.1, 1.0 - my_current_fatigue)
+            opp_stam_drop = max(0.1, 1.0 - opp_current_fatigue)
+
+            if debug_mode:
+                print(f"Епізод {minute+1}/{total_chances} | Рахунок {my_goals}:{opp_goals}")
+                print(f"  Моя фіза: {my_stam_drop*100:.1f}% (Пресинг: {self.t_my['press']})")
+                print(f"  Їхня фіза: {opp_stam_drop*100:.1f}% (Пресинг: {self.t_opp['press']})")
+                print("-" * 30)
+
+            # 2. ЦЕНТР ПОЛЯ: Володіння
             my_mid = my_poss * m_pass_m * m_strat_m * my_stam_drop * rps_my
             opp_mid = opp_poss * o_pass_m * o_strat_m * opp_stam_drop * rps_opp
 
@@ -154,54 +194,50 @@ class ButsaMatchEngine:
             else:
                 attacker = 'me' if random.random() < (my_mid / (my_mid + opp_mid)) else 'opp'
 
-            # 2. АТАКА vs ЗАХИСТ
+            # 3. АТАКА vs ЗАХИСТ
             if attacker == 'me':
-                # [НОВЕ] Чесний розподіл для ВАШОЇ команди
                 if self.t_my['strat'] == 'Технічна гра':
                     atk_stat = my_tech
                 elif self.t_my['strat'] == 'Гра в пас':
                     atk_stat = my_poss
-                else: # Нормальна або Дальні удари
+                else:
                     atk_stat = (my_tech + my_poss) * 0.56
                 
                 atk_pow = atk_stat * m_atk_w * m_strat_m * my_stam_drop * rps_my
                 def_pow = opp_tack * o_def_w * opp_stam_drop
 
-                # [НОВЕ] Унікальна логіка для Дальніх ударів
                 if self.t_my['strat'] == 'Дальні удари':
-                    def_pow *= 0.92 # Захисники не встигають накрити дальній удар
+                    def_pow *= 0.92
                 
-                if self.t_my['press'] == 'ТАК': atk_pow *= 1.1
+                # Застосовуємо динамічний бонус пресингу
+                atk_pow *= my_press_bonus
                 
                 if (atk_pow + def_pow > 0) and random.random() < (atk_pow / (atk_pow + def_pow)):
-                    # Удар множиться на m_shot_boost
                     shot = my_shot * m_shot_boost * my_stam_drop
                     gk = (opp_gk * 0.25) * o_def_w
 
                     if self.t_my['strat'] == 'Дальні удари':
-                        gk *= 1.1 # Але воротарю набагато легше зловити м'яч здалеку 
+                        gk *= 1.1 
                     
                     if (shot + gk > 0) and random.random() < (shot / (shot + gk)):
                         my_goals += 1
             else:
-                # [НОВЕ] Чесний розподіл для команди СУПЕРНИКА
                 if self.t_opp['strat'] == 'Технічна гра':
                     atk_stat = opp_tech
                 elif self.t_opp['strat'] == 'Гра в пас':
                     atk_stat = opp_poss
                 else:
-                    atk_stat = (opp_tech + opp_poss) / 2.0
+                    atk_stat = (opp_tech + opp_poss) * 0.56
                 
                 atk_pow = atk_stat * o_atk_w * o_strat_m * opp_stam_drop * rps_opp
                 def_pow = my_tack * m_def_w * my_stam_drop
 
-                if self.t_opp['strat'] == 'Дальні удари':
-                    def_pow *= 0.92 # Захисники не встигають накрити дальній удар
+                if self.t_opp['strat'] == 'Дальні удари': def_pow *= 0.92
                 
-                if self.t_opp['press'] == 'ТАК': atk_pow *= 1.1
+                # Застосовуємо динамічний бонус пресингу
+                atk_pow *= opp_press_bonus
                 
                 if (atk_pow + def_pow > 0) and random.random() < (atk_pow / (atk_pow + def_pow)):
-                    # Удар множиться на o_shot_boost
                     shot = opp_shot * o_shot_boost * opp_stam_drop
                     gk = (my_gk * 0.25) * m_def_w
 
@@ -239,11 +275,12 @@ class ButsaMatchEngine:
 
 class TacticsOptimizer:
     # ТЕПЕР ВІН ПРИЙМАЄ 3 АРГУМЕНТИ (третій - необов'язковий)
-    def __init__(self, my_stats, opp_stats, opp_tactics_input=None, min_c=2, max_c=20):
+    def __init__(self, my_stats, opp_stats, opp_tactics_input=None, min_c=2, max_c=20, tourn_coef=0.5):
         self.my = my_stats
         self.opp = opp_stats
         self.min_c = min_c
         self.max_c = max_c
+        self.tourn_coef = tourn_coef
         
         # Обробляємо те, що ви передали з app.py
         if opp_tactics_input is not None:
@@ -284,7 +321,7 @@ class TacticsOptimizer:
         # 2. ДИНАМІЧНА КІЛЬКІСТЬ ІТЕРАЦІЙ
         # Якщо тестуємо проти 1 тактики Тренера, треба багато матчів (200) для точності.
         # Якщо тестуємо проти 3000 тактик, достатньо 2 матчів (бо 3000*2 = 6000 матчів сумарно).
-        iters_per_opp = 200 if len(self.opp_tactics_list) == 1 else 3
+        iters_per_opp = 200 if len(self.opp_tactics_list) == 1 else 1
 
         # 3. ПІДГОТОВКА ДАНИХ ДЛЯ ЯДЕР ПРОЦЕСОРА
         worker_args = []
@@ -293,7 +330,7 @@ class TacticsOptimizer:
                 'pass_type': my_combo[0], 'strat': my_combo[1], 'press': my_combo[2],
                 'tactic_val': my_combo[3], 'dens_in': my_combo[4], 'dens_btwn': my_combo[5]
             }
-            worker_args.append((my_t, self.opp_tactics_list, self.my, self.opp, iters_per_opp, self.min_c, self.max_c))
+            worker_args.append((my_t, self.opp_tactics_list, self.my, self.opp, iters_per_opp, self.min_c, self.max_c, self.tourn_coef))
         
         # [ОПТИМІЗАЦІЯ 2]: Запуск через Joblib (Безпечно для Streamlit!)
         cores_to_use = max(1, os.cpu_count() - 1) 

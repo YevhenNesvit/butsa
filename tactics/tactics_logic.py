@@ -1,13 +1,14 @@
 # --- КОНСТАНТИ СХЕМ ---
 ALL_FORMATIONS = {
+    '1-6-3': {'def': 1, 'mid': 6, 'att': 3},
     '2-5-3': {'def': 2, 'mid': 5, 'att': 3},
     '2-6-2': {'def': 2, 'mid': 6, 'att': 2},
     '3-4-3': {'def': 3, 'mid': 4, 'att': 3},
     '3-5-2': {'def': 3, 'mid': 5, 'att': 2},
     '3-6-1': {'def': 3, 'mid': 6, 'att': 1},
     '3-7-0': {'def': 3, 'mid': 7, 'att': 0},
-    '4-4-2': {'def': 4, 'mid': 4, 'att': 2},
     '4-3-3': {'def': 4, 'mid': 3, 'att': 3},
+    '4-4-2': {'def': 4, 'mid': 4, 'att': 2},
     '4-5-1': {'def': 4, 'mid': 5, 'att': 1},
     '5-3-2': {'def': 5, 'mid': 3, 'att': 2},
     '5-4-1': {'def': 5, 'mid': 4, 'att': 1}
@@ -348,8 +349,8 @@ def get_tactical_advice(my_team, opp_stats, best_meta, is_opp_home):
         opp_strat_clean = "Технічна гра"
 
     # 4. Гра в пас (Бонуси Пл АБО Володіння б'є наш Захист)
-    elif opp_b['playmaker_mid'] >= 3 or (opp_eng['possession'] > my_eng['tackle_eff'] * 1.19 and opp_eng['possession'] > 0): 
-        if opp_b['playmaker_mid'] >= 3: guess_details.append(f"Пл{opp_b['playmaker_mid']}")
+    elif opp_b['playmaker_mid'] >= 4 or (opp_eng['possession'] > my_eng['tackle_eff'] * 1.19 and opp_eng['possession'] > 0): 
+        if opp_b['playmaker_mid'] >= 4: guess_details.append(f"Пл{opp_b['playmaker_mid']}")
         else: guess_details.append(f"Пас/Прийом ({opp_eng['possession']:.0f})")
         opp_guess_str = "Гра в пас (Володіння)"
         opp_strat_clean = "Гра в пас"
@@ -381,7 +382,7 @@ def get_tactical_advice(my_team, opp_stats, best_meta, is_opp_home):
     if opp_strat_clean == "Гра в пас":
         opp_dens_in, opp_dens_btwn = 71, 71
     elif opp_strat_clean == "Дальні удари":
-        opp_dens_in, opp_dens_btwn = 31, 31
+        opp_dens_in, opp_dens_btwn = 51, 31
     elif opp_strat_clean == "Технічна гра":
         opp_dens_in, opp_dens_btwn = 31, 51
 
@@ -434,7 +435,7 @@ def get_tactical_advice(my_team, opp_stats, best_meta, is_opp_home):
     dens_btwn = max(11, min(92, dens_btwn))
 
     press, press_reason = "НІ", ""
-    if tactic_val > 60 or diff < -47 or my_eng['stamina_eff'] > opp_eng['stamina_eff'] * 1.05:
+    if tactic_val > 60 or diff < -47 or my_eng['stamina_eff'] > opp_eng['stamina_eff'] * 1.1:
         press, press_reason = "ТАК", "Фізика / Агресія"
 
     return {

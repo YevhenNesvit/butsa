@@ -302,13 +302,18 @@ if st.session_state.opp_roster and my_team_stats:
                 
                 opp_predicted = advice['opp_predicted_tactic']
 
+                if "коммерч" in tourn_input.lower():
+                    tourn_coef = 0.5
+                else:
+                    tourn_coef = 1.0
+
                 # ==========================================
                 # ЛОГІКА ПЕРЕМИКАЧА
                 # ==========================================
                 if robust_mode:
                     st.warning("⚠️ УВІМКНЕНО ТОТАЛЬНИЙ АНАЛІЗ. ШІ прораховує 3000 ваших комбінацій проти 3000 тактик суперника. Зачекайте...")
                     # Не передаємо 3-й аргумент -> Оптимізатор сам згенерує 3000 тактик!
-                    optimizer = me.TacticsOptimizer(my_eng, opp_eng, opp_tactics_input=None, min_c=min_chances, max_c=max_chances)
+                    optimizer = me.TacticsOptimizer(my_eng, opp_eng, opp_tactics_input=None, min_c=min_chances, max_c=max_chances, tourn_coef=tourn_coef)
                 else:
                     st.info(f"""
                     🤖 **Швидка симуляція проти очікуваної гри суперника:**
@@ -316,7 +321,7 @@ if st.session_state.opp_roster and my_team_stats:
                     * **Тактика:** {opp_predicted['tactic_val']} | **Щільність:** {opp_predicted['dens_in']} / {opp_predicted['dens_btwn']}
                     """)
                     # Передаємо 3-й аргумент -> Оптимізатор б'ється тільки проти цієї 1 тактики!
-                    optimizer = me.TacticsOptimizer(my_eng, opp_eng, opp_tactics_input=opp_predicted, min_c=min_chances, max_c=max_chances)
+                    optimizer = me.TacticsOptimizer(my_eng, opp_eng, opp_tactics_input=opp_predicted, min_c=min_chances, max_c=max_chances, tourn_coef=tourn_coef)
 
                 # Запуск Монте-Карло
                 top_tactics = optimizer.find_best_tactic()
@@ -339,3 +344,20 @@ if st.session_state.opp_roster and my_team_stats:
                         st.write(f"**Між лініями:** {c['dens_btwn']}")
                         st.write(f"**Тактика:** {c['tactic_val']}")
                         st.caption(f"Середні забиті голи: {res['avg_goals']:.2f}")
+
+                best_tactic = top_tactics[0]['combo'] # Беремо знайдену ТОП-1 тактику
+                
+                print("\n" + "="*50)
+                print("🏆 ПОКАЗОВИЙ МАТЧ ТОП-1 ТАКТИКИ ПРОТИ СУПЕРНИКА 🏆")
+                print("="*50)
+                
+                # Створюємо стадіон на 1 матч
+                demo_engine = me.ButsaMatchEngine(
+                    my_eng, opp_eng, 
+                    best_tactic, opp_predicted, 
+                    min_chances, max_chances, tourn_coef
+                )
+                
+                # Запускаємо з принтом у консоль!
+                demo_engine.simulate_match(debug_mode=True)
+                print("="*50 + "\n")
