@@ -291,6 +291,14 @@ if st.session_state.opp_roster and my_team_stats:
         
         st.info(f"📊 Розрахований діапазон для рушія: від **{min_chances}** до **{max_chances}** ігрових епізодів.")
 
+        st.markdown("---")
+        st.write("**⚠️ Дисципліна (Середні порушення за матч)**")
+        col_foul1, col_foul2 = st.columns(2)
+        with col_foul1:
+            my_fouls_input = st.number_input("Наші порушення:", min_value=0, value=3, step=1)
+        with col_foul2:
+            opp_fouls_input = st.number_input("Порушення суперника:", min_value=0, value=3, step=1)
+
         if st.button("🚀 Запустити Симуляцію", type="primary"):
             with st.spinner("Граємо віртуальні матчі... Це може зайняти деякий час ⏳"):
                 
@@ -313,7 +321,7 @@ if st.session_state.opp_roster and my_team_stats:
                 if robust_mode:
                     st.warning("⚠️ УВІМКНЕНО ТОТАЛЬНИЙ АНАЛІЗ. ШІ прораховує 3000 ваших комбінацій проти 3000 тактик суперника. Зачекайте...")
                     # Не передаємо 3-й аргумент -> Оптимізатор сам згенерує 3000 тактик!
-                    optimizer = me.TacticsOptimizer(my_eng, opp_eng, opp_tactics_input=None, min_c=min_chances, max_c=max_chances, tourn_coef=tourn_coef)
+                    optimizer = me.TacticsOptimizer(my_eng, opp_eng, opp_tactics_input=None, min_c=min_chances, max_c=max_chances, tourn_coef=tourn_coef, my_fouls_avg=my_fouls_input, opp_fouls_avg=opp_fouls_input)
                 else:
                     st.info(f"""
                     🤖 **Швидка симуляція проти очікуваної гри суперника:**
@@ -321,7 +329,7 @@ if st.session_state.opp_roster and my_team_stats:
                     * **Тактика:** {opp_predicted['tactic_val']} | **Щільність:** {opp_predicted['dens_in']} / {opp_predicted['dens_btwn']}
                     """)
                     # Передаємо 3-й аргумент -> Оптимізатор б'ється тільки проти цієї 1 тактики!
-                    optimizer = me.TacticsOptimizer(my_eng, opp_eng, opp_tactics_input=opp_predicted, min_c=min_chances, max_c=max_chances, tourn_coef=tourn_coef)
+                    optimizer = me.TacticsOptimizer(my_eng, opp_eng, opp_tactics_input=opp_predicted, min_c=min_chances, max_c=max_chances, tourn_coef=tourn_coef, my_fouls_avg=my_fouls_input, opp_fouls_avg=opp_fouls_input)
 
                 # Запуск Монте-Карло
                 top_tactics = optimizer.find_best_tactic()
@@ -355,7 +363,9 @@ if st.session_state.opp_roster and my_team_stats:
                 demo_engine = me.ButsaMatchEngine(
                     my_eng, opp_eng, 
                     best_tactic, opp_predicted, 
-                    min_chances, max_chances, tourn_coef
+                    min_chances, max_chances, tourn_coef,
+                    my_fouls_avg=my_fouls_input,    # <--- [НОВЕ]
+                    opp_fouls_avg=opp_fouls_input   # <--- [НОВЕ]
                 )
                 
                 # Запускаємо з принтом у консоль!

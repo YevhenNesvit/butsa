@@ -8,14 +8,14 @@ from joblib import Parallel, delayed
 # Вона має бути поза класами, щоб Windows міг передати її іншим ядрам процесора
 # =====================================================================
 def evaluate_tactic_worker(args):
-    my_t, opp_tactics_list, my_stats, opp_stats, iters_per_opp, min_c, max_c, tourn_coef = args
+    my_t, opp_tactics_list, my_stats, opp_stats, iters_per_opp, min_c, max_c, tourn_coef, my_fouls_avg, opp_fouls_avg = args
     
     total_wins = 0
     total_my_goals = 0
     master_score_counts = {}
     
     # [ОПТИМІЗАЦІЯ 1]: Створюємо стадіон ЛИШЕ ОДИН РАЗ!
-    engine = ButsaMatchEngine(my_stats, opp_stats, my_t, opp_tactics_list[0], min_c, max_c, tourn_coef)
+    engine = ButsaMatchEngine(my_stats, opp_stats, my_t, opp_tactics_list[0], min_c, max_c, tourn_coef, my_fouls_avg, opp_fouls_avg)
     
     for opp_t in opp_tactics_list:
         # Просто "перевдягаємо" тактику суперника без створення нового об'єкту
@@ -47,7 +47,7 @@ def evaluate_tactic_worker(args):
     }
 
 class ButsaMatchEngine:
-    def __init__(self, my_stats, opp_stats, my_tactics, opp_tactics, min_c, max_c, tourn_coef):
+    def __init__(self, my_stats, opp_stats, my_tactics, opp_tactics, min_c, max_c, tourn_coef, my_fouls_avg=3.0, opp_fouls_avg=3.0):
         self.my = my_stats
         self.opp = opp_stats
         self.t_my = my_tactics
@@ -55,6 +55,8 @@ class ButsaMatchEngine:
         self.min_c = min_c # Зберегли
         self.max_c = max_c # Зберегли
         self.tourn_coef = tourn_coef
+        self.my_fouls_avg = my_fouls_avg   # [НОВЕ]
+        self.opp_fouls_avg = opp_fouls_avg # [НОВЕ]
 
     def get_tactical_multipliers(self, is_me=True):
         t = self.t_my if is_me else self.t_opp
@@ -75,7 +77,7 @@ class ButsaMatchEngine:
             if dens_b < 41: pass_mod = 1.1       # Широко (бонус)
             elif dens_b > 60: pass_mod = 0.92     # Скупченість (штраф)
         elif t['pass_type'] == 'Змішані':
-            if 41 <= dens_b <= 60: pass_mod = 1.1 # Легкий бонус за баланс
+            if 41 <= dens_b <= 60: pass_mod = 1.01 # Легкий бонус за баланс
             
         # 2. СТРАТЕГІЯ (Щільність В лініях) та УДАР
         strat_mod = 1.0
@@ -92,10 +94,10 @@ class ButsaMatchEngine:
         elif t['strat'] == 'Дальні удари':
             strat_mod = 0.92                      # Важче пройти захист (б'ємо здалеку)
             shot_boost = 1.1                     # Але удар небезпечніший
-            if 41 <= dens_i <= 60: strat_mod += 0.11 # Легкий бонус за баланс
+            if 41 <= dens_i <= 60: strat_mod = 1.01 # Легкий бонус за баланс
             
         elif t['strat'] == 'Нормальна':
-            if 41 <= dens_i <= 60: strat_mod = 1.1  # Легкий бонус за баланс
+            if 41 <= dens_i <= 60: strat_mod = 1.01  # Легкий бонус за баланс
             
         return atk_w, def_w, pass_mod, strat_mod, shot_boost
 
@@ -147,6 +149,9 @@ class ButsaMatchEngine:
         my_current_fatigue = 0.0
         opp_current_fatigue = 0.0
 
+        my_base_foul_chance = self.my_fouls_avg / total_chances if total_chances > 0 else 0
+        opp_base_foul_chance = self.opp_fouls_avg / total_chances if total_chances > 0 else 0
+
         for minute in range(total_chances):
             # 1. РОЗУМНИЙ ПРЕСИНГ (За офіційними правилами Бутси)
             score_diff = abs(my_goals - opp_goals)
@@ -189,6 +194,51 @@ class ButsaMatchEngine:
             my_mid = my_poss * m_pass_m * m_strat_m * my_stam_drop * rps_my
             opp_mid = opp_poss * o_pass_m * o_strat_m * opp_stam_drop * rps_opp
 
+            my_pass_bonus = 1.0
+            opp_pass_bonus = 1.0
+
+            # Логіка для НАШОЇ команди
+            if self.t_my['pass_type'] == 'Короткі':
+                if self.t_opp['pass_type'] == 'Змішані': my_pass_bonus = 1.1
+                elif self.t_opp['pass_type'] == 'Дальні': my_pass_bonus = 0.92
+                
+            elif self.t_my['pass_type'] == 'Змішані':
+                if self.t_opp['pass_type'] == 'Дальні': my_pass_bonus = 1.1
+                elif self.t_opp['pass_type'] == 'Короткі': my_pass_bonus = 0.92
+                
+            elif self.t_my['pass_type'] == 'Дальні':
+                if self.t_opp['pass_type'] == 'Короткі': my_pass_bonus = 1.1
+                elif self.t_opp['pass_type'] == 'Змішані': my_pass_bonus = 0.92
+
+            # Логіка для СУПЕРНИКА (дзеркальна)
+            if self.t_opp['pass_type'] == 'Короткі':
+                if self.t_my['pass_type'] == 'Змішані': opp_pass_bonus = 1.1
+                elif self.t_my['pass_type'] == 'Дальні': opp_pass_bonus = 0.92
+                
+            elif self.t_opp['pass_type'] == 'Змішані':
+                if self.t_my['pass_type'] == 'Дальні': opp_pass_bonus = 1.1
+                elif self.t_my['pass_type'] == 'Короткі': opp_pass_bonus = 0.92
+                
+            elif self.t_opp['pass_type'] == 'Дальні':
+                if self.t_my['pass_type'] == 'Короткі': opp_pass_bonus = 1.1
+                elif self.t_my['pass_type'] == 'Змішані': opp_pass_bonus = 0.92
+
+            # --- ВПЛИВ ПРЕСИНГУ (Множник ризику) ---
+            # Якщо ти виграв дуель пасів, пресинг добиває суперника (+0.10)
+            # Якщо програв дуель, пресинг погіршує твою ситуацію (-0.10)
+            
+            if self.t_my['press'] == 'ТАК':
+                if my_pass_bonus > 1.0: my_pass_bonus += 0.09  
+                elif my_pass_bonus < 1.0: my_pass_bonus -= 0.09 
+
+            if self.t_opp['press'] == 'ТАК':
+                if opp_pass_bonus > 1.0: opp_pass_bonus += 0.09
+                elif opp_pass_bonus < 1.0: opp_pass_bonus -= 0.09
+
+            # Застосовуємо фінальні бонуси до центру поля
+            my_mid *= my_pass_bonus
+            opp_mid *= opp_pass_bonus
+
             if my_mid + opp_mid == 0:
                 attacker = 'me' if random.random() < 0.5 else 'opp'
             else:
@@ -196,53 +246,72 @@ class ButsaMatchEngine:
 
             # 3. АТАКА vs ЗАХИСТ
             if attacker == 'me':
-                if self.t_my['strat'] == 'Технічна гра':
-                    atk_stat = my_tech
-                elif self.t_my['strat'] == 'Гра в пас':
-                    atk_stat = my_poss
+                # --- ЛОГІКА ФОЛІВ ---
+                # Якщо суперник пресингує, він фолить частіше (x1.5)
+                opp_foul_chance = opp_base_foul_chance * 1.19 if self.t_opp['press'] == 'ТАК' else opp_base_foul_chance
+                
+                if random.random() < opp_foul_chance: 
+                    if random.random() < 0.25: # 25% фолів - небезпечний штрафний
+                        shot = my_shot * m_shot_boost * my_stam_drop * 1.1 
+                        gk = (opp_gk * 0.25) * opp_stam_drop
+                        if (shot + gk > 0) and random.random() < (shot / (shot + gk)):
+                            my_goals += 1
+                        continue # Епізод завершено
+                    else:
+                        foul_def_penalty = 0.85 # Тактичний фол: захист не встиг повернутись
                 else:
-                    atk_stat = (my_tech + my_poss) * 0.56
+                    foul_def_penalty = 1.0
+
+                # --- СТАНДАРТНА АТАКА ---
+                if self.t_my['strat'] == 'Технічна гра': atk_stat = my_tech
+                elif self.t_my['strat'] == 'Гра в пас': atk_stat = my_poss
+                else: atk_stat = (my_tech + my_poss) * 0.56
                 
                 atk_pow = atk_stat * m_atk_w * m_strat_m * my_stam_drop * rps_my
-                def_pow = opp_tack * o_def_w * opp_stam_drop
+                def_pow = opp_tack * o_def_w * opp_stam_drop * foul_def_penalty 
 
-                if self.t_my['strat'] == 'Дальні удари':
-                    def_pow *= 0.92
-                
-                # Застосовуємо динамічний бонус пресингу
-                atk_pow *= my_press_bonus
+                if self.t_my['strat'] == 'Дальні удари': def_pow *= 0.92
+                if self.t_my['press'] == 'ТАК': atk_pow *= my_press_bonus
                 
                 if (atk_pow + def_pow > 0) and random.random() < (atk_pow / (atk_pow + def_pow)):
                     shot = my_shot * m_shot_boost * my_stam_drop
-                    gk = (opp_gk * 0.25) * o_def_w
-
-                    if self.t_my['strat'] == 'Дальні удари':
-                        gk *= 1.1 
+                    gk = (opp_gk * 0.25) * opp_stam_drop
+                    if self.t_my['strat'] == 'Дальні удари': gk *= 1.1 
                     
                     if (shot + gk > 0) and random.random() < (shot / (shot + gk)):
                         my_goals += 1
+                        
             else:
-                if self.t_opp['strat'] == 'Технічна гра':
-                    atk_stat = opp_tech
-                elif self.t_opp['strat'] == 'Гра в пас':
-                    atk_stat = opp_poss
+                # --- ЛОГІКА ФОЛІВ (Атакує суперник) ---
+                my_foul_chance = my_base_foul_chance * 1.19 if self.t_my['press'] == 'ТАК' else my_base_foul_chance
+                
+                if random.random() < my_foul_chance: 
+                    if random.random() < 0.25:
+                        shot = opp_shot * o_shot_boost * opp_stam_drop * 1.1 
+                        gk = (my_gk * 0.25) * my_stam_drop
+                        if (shot + gk > 0) and random.random() < (shot / (shot + gk)):
+                            opp_goals += 1
+                        continue 
+                    else:
+                        foul_def_penalty = 0.85 
                 else:
-                    atk_stat = (opp_tech + opp_poss) * 0.56
+                    foul_def_penalty = 1.0
+
+                # --- СТАНДАРТНА АТАКА ---
+                if self.t_opp['strat'] == 'Технічна гра': atk_stat = opp_tech
+                elif self.t_opp['strat'] == 'Гра в пас': atk_stat = opp_poss
+                else: atk_stat = (opp_tech + opp_poss) * 0.56
                 
                 atk_pow = atk_stat * o_atk_w * o_strat_m * opp_stam_drop * rps_opp
-                def_pow = my_tack * m_def_w * my_stam_drop
+                def_pow = my_tack * m_def_w * my_stam_drop * foul_def_penalty
 
                 if self.t_opp['strat'] == 'Дальні удари': def_pow *= 0.92
-                
-                # Застосовуємо динамічний бонус пресингу
-                atk_pow *= opp_press_bonus
+                if self.t_opp['press'] == 'ТАК': atk_pow *= opp_press_bonus
                 
                 if (atk_pow + def_pow > 0) and random.random() < (atk_pow / (atk_pow + def_pow)):
                     shot = opp_shot * o_shot_boost * opp_stam_drop
-                    gk = (my_gk * 0.25) * m_def_w
-
-                    if self.t_opp['strat'] == 'Дальні удари':
-                        gk *= 1.1
+                    gk = (my_gk * 0.25) * my_stam_drop
+                    if self.t_opp['strat'] == 'Дальні удари': gk *= 1.1
                     
                     if (shot + gk > 0) and random.random() < (shot / (shot + gk)):
                         opp_goals += 1
@@ -275,12 +344,14 @@ class ButsaMatchEngine:
 
 class TacticsOptimizer:
     # ТЕПЕР ВІН ПРИЙМАЄ 3 АРГУМЕНТИ (третій - необов'язковий)
-    def __init__(self, my_stats, opp_stats, opp_tactics_input=None, min_c=2, max_c=20, tourn_coef=0.5):
+    def __init__(self, my_stats, opp_stats, opp_tactics_input=None, min_c=2, max_c=20, tourn_coef=0.5, my_fouls_avg=3.0, opp_fouls_avg=3.0):
         self.my = my_stats
         self.opp = opp_stats
         self.min_c = min_c
         self.max_c = max_c
         self.tourn_coef = tourn_coef
+        self.my_fouls_avg = my_fouls_avg   # [НОВЕ]
+        self.opp_fouls_avg = opp_fouls_avg # [НОВЕ]
         
         # Обробляємо те, що ви передали з app.py
         if opp_tactics_input is not None:
@@ -330,7 +401,7 @@ class TacticsOptimizer:
                 'pass_type': my_combo[0], 'strat': my_combo[1], 'press': my_combo[2],
                 'tactic_val': my_combo[3], 'dens_in': my_combo[4], 'dens_btwn': my_combo[5]
             }
-            worker_args.append((my_t, self.opp_tactics_list, self.my, self.opp, iters_per_opp, self.min_c, self.max_c, self.tourn_coef))
+            worker_args.append((my_t, self.opp_tactics_list, self.my, self.opp, iters_per_opp, self.min_c, self.max_c, self.tourn_coef, self.my_fouls_avg, self.opp_fouls_avg))
         
         # [ОПТИМІЗАЦІЯ 2]: Запуск через Joblib (Безпечно для Streamlit!)
         cores_to_use = max(1, os.cpu_count() - 1) 
@@ -341,5 +412,5 @@ class TacticsOptimizer:
         )
 
         # Сортуємо: 1) Вінрейт 2) Голи
-        results.sort(key=lambda x: (x['winrate'], x['avg_goals']), reverse=True)
+        results.sort(key=lambda x: (round(x['winrate'] * 2) / 2, x['avg_goals']), reverse=True)
         return results[:3]
