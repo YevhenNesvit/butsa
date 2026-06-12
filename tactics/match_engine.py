@@ -158,23 +158,32 @@ class ButsaMatchEngine:
             
             my_press_bonus = 1.0
             my_press_penalty = 1.0
+            my_is_pressing_now = False
+
             if self.t_my['press'] == 'ТАК':
                 if score_diff < 2:
-                    my_press_bonus = 1.10   # Максимальний тиск в атаці
-                    my_press_penalty = 1.50 # Максимальна втрата фізики (ті самі +50%)
+                    my_press_bonus = 1.10   
+                    my_press_penalty = 1.50
+                    my_is_pressing_now = True 
                 else:
-                    my_press_bonus = 1.0   # Розслабились (рахунок дозволяє)
-                    my_press_penalty = 1.0 # Економлять сили
+                    # Інтенсивність падає (тренер просив, але гравці бачать, що гра зроблена або провалена)
+                    my_press_bonus = 1.0   
+                    my_press_penalty = 1.0 
+                    my_is_pressing_now = False
 
             opp_press_bonus = 1.0
             opp_press_penalty = 1.0
+            opp_is_pressing_now = False
+
             if self.t_opp['press'] == 'ТАК':
                 if score_diff < 2:
                     opp_press_bonus = 1.10
                     opp_press_penalty = 1.50
+                    opp_is_pressing_now = True
                 else:
                     opp_press_bonus = 1.0
                     opp_press_penalty = 1.0
+                    opp_is_pressing_now = False
 
             # Накопичуємо втому епізод за епізодом
             my_current_fatigue += (my_drop_pct / total_chances) * my_press_penalty
@@ -248,7 +257,7 @@ class ButsaMatchEngine:
             if attacker == 'me':
                 # --- ЛОГІКА ФОЛІВ ---
                 # Якщо суперник пресингує, він фолить частіше (x1.5)
-                opp_foul_chance = opp_base_foul_chance * 1.19 if self.t_opp['press'] == 'ТАК' else opp_base_foul_chance
+                opp_foul_chance = opp_base_foul_chance * 1.19 if opp_is_pressing_now else opp_base_foul_chance
                 
                 if random.random() < opp_foul_chance: 
                     if random.random() < 0.25: # 25% фолів - небезпечний штрафний
@@ -258,7 +267,7 @@ class ButsaMatchEngine:
                             my_goals += 1
                         continue # Епізод завершено
                     else:
-                        foul_def_penalty = 0.85 # Тактичний фол: захист не встиг повернутись
+                        foul_def_penalty = 0.92 # Тактичний фол: захист не встиг повернутись
                 else:
                     foul_def_penalty = 1.0
 
@@ -283,7 +292,7 @@ class ButsaMatchEngine:
                         
             else:
                 # --- ЛОГІКА ФОЛІВ (Атакує суперник) ---
-                my_foul_chance = my_base_foul_chance * 1.19 if self.t_my['press'] == 'ТАК' else my_base_foul_chance
+                my_foul_chance = my_base_foul_chance * 1.19 if my_is_pressing_now else my_base_foul_chance
                 
                 if random.random() < my_foul_chance: 
                     if random.random() < 0.25:

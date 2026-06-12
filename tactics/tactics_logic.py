@@ -400,48 +400,8 @@ def get_tactical_advice(my_team, opp_stats, best_meta, is_opp_home):
         'dens_btwn': int(opp_dens_btwn)
     }
 
-    base_tactic = 47 + (diff * 0.11) if diff > 0 else 47 + (diff * 0.2)
-    base_tactic += -11 if is_opp_home else 11
-    forced_lock = False
-    if cfs >= 3 and base_tactic > 47: base_tactic = 47; forced_lock = True
-    tactic_val = max(11, min(92, base_tactic))
-    t_desc = "Атака" if tactic_val > 60 else "Захист" if tactic_val < 41 else "Баланс"
-    if forced_lock: t_desc += " (Lock: 3 CF)"
-
-    pass_type = "Змішані"; pass_reason = "Рівна гра"
-    if my_eng['possession'] > opp_eng['tackle_eff'] * 1.19: pass_type, pass_reason = "Короткі", "Наше Володіння б'є їхній Захист"
-    elif my_eng['possession'] < opp_eng['tackle_eff'] * 0.83: pass_type, pass_reason = "Дальні", "Їхній Захист душить наше Володіння"
-    if tactic_val < 41 and pass_type == "Короткі": pass_type += " -> Змішані (Safety)"
-    if diff < -47: pass_type, pass_reason = "Дальні", "Underdog"
-
-    strat = "Нормальна"; strat_reason = "Баланс"
-    if diff < -47: strat, strat_reason = "Дальні удари", "Ми слабші"
-    elif my_b['crossing_wing'] >= 2 and my_b['heading_att'] >= 1: strat, strat_reason = "Дальні удари", "Бонуси флангу"
-    elif my_eng['technique'] > opp_eng['tackle_eff'] * 1.19: strat, strat_reason = "Технічна гра", "Наша Техніка б'є їхній Захист"
-    elif my_eng['possession'] > opp_eng['tackle_eff'] * 1.19: strat, strat_reason = "Гра в пас", "Наш Пас б'є їхній Захист"
-    elif my_eng['shot_power'] > opp_eng['gk_skill'] * 0.137 and my_eng['shot_acc'] > opp_eng['gk_skill'] * 0.137: 
-        strat, strat_reason = "Дальні удари", "Проб'ємо воротаря"
-    elif mid_ratio > 1.19 and pass_type.startswith("Короткі"): strat, strat_reason = "Гра в пас", "Контроль"
-
-    dens_in = max(11, min(92, 47 + (cfs * 20) - (wings * 20)))
-    if opp_b['crossing_wing'] >= 4: dens_in -= 11
-    if cfs >= 3: dens_in = max(dens_in, 65)
-
-    dens_btwn = 47
-    if mid_ratio < 0.92: dens_btwn += 20
-    elif mid_ratio > 1.10: dens_btwn -= 20
-    if cfs >= 3: dens_btwn = max(dens_btwn, 83)
-    if tactic_val < 41: dens_btwn = max(dens_btwn, 74)
-    dens_btwn = max(11, min(92, dens_btwn))
-
-    press, press_reason = "НІ", ""
-    if tactic_val > 60 or diff < -47 or my_eng['stamina_eff'] > opp_eng['stamina_eff'] * 1.1:
-        press, press_reason = "ТАК", "Фізика / Агресія"
-
     return {
-        'diff': diff, 'opp_guess': f"{opp_guess_str} {guess_details}", 
-        'opp_predicted_tactic': opp_predicted_tactic, # ПЕРЕДАЄМО ПРОФІЛЬ ДАЛІ!
-        'strat': strat, 'strat_reason': strat_reason,
-        'pass_type': pass_type, 'pass_reason': pass_reason, 'tactic_val': tactic_val, 't_desc': t_desc,
-        'dens_in': dens_in, 'dr_in_reason': "", 'dens_btwn': dens_btwn, 'dr_bt_reason': "", 'press': press, 'press_reason': press_reason
+        'diff': diff,
+        'opp_guess': f"{opp_guess_str} {guess_details}", 
+        'opp_predicted_tactic': opp_predicted_tactic
     }
