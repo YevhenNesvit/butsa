@@ -211,54 +211,33 @@ if st.session_state.opp_roster and my_team_stats:
         best = results[0]
         opp_stats = best['res']
 
-        col_res1, col_res2 = st.columns(2)
-        
-        with col_res1:
-            st.subheader(f"Прогноз: {best['name']}")
-            if selected_formation_name != "Авто (Підібрати найкращу)": st.caption("(Схема зафіксована)")
-            
-            s = opp_stats['squad_dict']
-            st.write(f"**Nominal (Cap):** {opp_stats['nominal']:.1f}/{cap_input}")
-            st.write(f"**Real Power:** {opp_stats['real_total']:.1f}")
-            st.write("---")
-            st.write(f"**DEF ({opp_stats['def']:.1f}):** {', '.join([p['name'] for p in s['def']])}")
-            st.write(f"**MID ({opp_stats['mid']:.1f}):** {', '.join([p['name'] for p in s['mid']])}")
-            st.write(f"**ATT ({opp_stats['att']:.1f}):** {', '.join([p['name'] for p in s['att']])}")
-            if s['gk']: st.caption(f"GK ({s['gk'][0]['real_power']:.1f}): " + s['gk'][0]['name'])
+        # Отримуємо Diff та тишком генеруємо ймовірну тактику (тільки для консольного демо-матчу)
+        advice = lg.get_tactical_advice(
+            my_team_stats, 
+            opp_stats, 
+            {'c': best['c'], 'w': best['w']}, 
+            opponent_home
+        )
+        opp_predicted = advice['opp_predicted_tactic'] # Зберігаємо для терміналу
 
-        with col_res2:
-            st.subheader("Рішення")
-            # ВИКЛИК ПРАВИЛЬНОЇ ФУНКЦІЇ З LOGIC.PY
-            advice = lg.get_tactical_advice(
-                my_team_stats, 
-                opp_stats, 
-                {'c': best['c'], 'w': best['w']}, 
-                opponent_home
-            )
-            
-            st.markdown(f"**Diff:** {advice['diff']:.1f}")
-            st.warning(f"🔮 Очікуємо: **{advice['opp_guess']}**")
-            opp_pred = advice['opp_predicted_tactic']
-            st.caption(
-                f"⚙️ **Деталі їхньої тактики (прогноз):**\n"
-                f"Паси: {opp_pred['pass_type']} | "
-                f"Пресинг: {opp_pred['press']} | "
-                f"Повзунок (Атк/Зах): {opp_pred['tactic_val']} | "
-                f"В лінію: {opp_pred['dens_in']} | "
-                f"Між лініями: {opp_pred['dens_btwn']}"
-            )
-            
-            table_data = [
-                ["Паси", advice['pass_type'].upper(), advice['pass_reason']],
-                ["Стратегія", advice['strat'].upper(), advice['strat_reason']],
-                ["Пресинг", advice['press'], advice['press_reason']],
-                ["Щільн. в лінії", f"{advice['dens_in']:.0f}", advice['dr_in_reason']],
-                ["Щільн. між лін.", f"{advice['dens_btwn']:.0f}", advice['dr_bt_reason']],
-                ["Тактика", f"{advice['tactic_val']:.0f}", advice['t_desc']]
-            ]
-            df_advice = pd.DataFrame(table_data, columns=["Параметр", "Значення", "Логіка"])
-            st.table(df_advice)
-            st.divider()
+        # Єдиний чистий блок інформації про суперника (без колонок)
+        st.subheader(f"Прогноз: {best['name']}")
+        if selected_formation_name != "Авто (Підібрати найкращу)": 
+            st.caption("(Схема зафіксована)")
+        
+        s = opp_stats['squad_dict']
+        st.write(f"**Nominal (Cap):** {opp_stats['nominal']:.1f} / {cap_input}")
+        st.write(f"**Real Power:** {opp_stats['real_total']:.1f}")
+        st.markdown(f"**Різниця в силі (Diff):** :violet[{advice['diff']:.1f}]") # Перенесли сюди і виділили кольором!
+        st.write("---")
+        
+        st.write(f"**DEF ({opp_stats['def']:.1f}):** {', '.join([p['name'] for p in s['def']])}")
+        st.write(f"**MID ({opp_stats['mid']:.1f}):** {', '.join([p['name'] for p in s['mid']])}")
+        st.write(f"**ATT ({opp_stats['att']:.1f}):** {', '.join([p['name'] for p in s['att']])}")
+        if s['gk']: 
+            st.caption(f"GK ({s['gk'][0]['real_power']:.1f}): " + s['gk'][0]['name'])
+
+        st.divider()
         st.subheader("🤖 ШІ-Оптимізатор (Monte Carlo Brute-Force)")
         st.write("Просимулювати всі можливі комбінації, щоб знайти 100% ідеальну тактику?")
         
@@ -267,13 +246,6 @@ if st.session_state.opp_roster and my_team_stats:
         # ==========================================
         st.markdown("---")
         st.subheader("⚙️ Режим симуляції")
-        
-        # Створюємо перемикач в інтерфейсі
-        robust_mode = st.toggle(
-            "🔥 Увімкнути Тотальний Аналіз (Робастна оптимізація)", 
-            value=False, 
-            help="Якщо увімкнено, ШІ тестуватиме ваші тактики проти 3000 можливих варіантів суперника. Це займає більше часу, але знаходить 'безсмертну' тактику. Якщо вимкнено — швидкий тест лише проти прогнозу Тренера."
-        )
 
         # --- ПОЧАТОК НОВОГО БЛОКУ ДЛЯ УДАРІВ ---
         st.write("**Темп гри (Активність команд)**")
@@ -315,26 +287,19 @@ if st.session_state.opp_roster and my_team_stats:
                 else:
                     tourn_coef = 1.0
 
-                # ==========================================
-                # ЛОГІКА ПЕРЕМИКАЧА
-                # ==========================================
-                if robust_mode:
-                    st.warning("⚠️ УВІМКНЕНО ТОТАЛЬНИЙ АНАЛІЗ. ШІ прораховує 3000 ваших комбінацій проти 3000 тактик суперника. Зачекайте...")
-                    # Не передаємо 3-й аргумент -> Оптимізатор сам згенерує 3000 тактик!
-                    optimizer = me.TacticsOptimizer(my_eng, opp_eng, opp_tactics_input=None, min_c=min_chances, max_c=max_chances, tourn_coef=tourn_coef, my_fouls_avg=my_fouls_input, opp_fouls_avg=opp_fouls_input)
-                else:
-                    st.info(f"""
-                    🤖 **Швидка симуляція проти очікуваної гри суперника:**
-                    * **Стратегія:** {opp_predicted['strat']} | **Паси:** {opp_predicted['pass_type']} | **Пресинг:** {opp_predicted['press']}
-                    * **Тактика:** {opp_predicted['tactic_val']} | **Щільність:** {opp_predicted['dens_in']} / {opp_predicted['dens_btwn']}
-                    """)
-                    # Передаємо 3-й аргумент -> Оптимізатор б'ється тільки проти цієї 1 тактики!
-                    optimizer = me.TacticsOptimizer(my_eng, opp_eng, opp_tactics_input=opp_predicted, min_c=min_chances, max_c=max_chances, tourn_coef=tourn_coef, my_fouls_avg=my_fouls_input, opp_fouls_avg=opp_fouls_input)
+                # [ВИПРАВЛЕНО] Завжди використовуємо Тотальний Аналіз (3000 комбінацій)
+                st.warning("⚠️ ШІ прораховує 3000 ваших комбінацій проти 3000 можливих тактик суперника. Зачекайте...")
+                
+                optimizer = me.TacticsOptimizer(
+                    my_eng, opp_eng, 
+                    opp_tactics_input=None, # None означає, що ШІ тестує проти всіх 3000 варіантів
+                    min_c=min_chances, max_c=max_chances, 
+                    tourn_coef=tourn_coef, 
+                    my_fouls_avg=my_fouls_input, opp_fouls_avg=opp_fouls_input
+                )
 
                 # Запуск Монте-Карло
                 top_tactics = optimizer.find_best_tactic()
-                
-                st.success("✅ Симуляцію завершено!")
                 
                 # ==========================================
                 # ВИВІД РЕЗУЛЬТАТІВ ТОП-3
