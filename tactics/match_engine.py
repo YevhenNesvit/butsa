@@ -11,6 +11,7 @@ def evaluate_tactic_worker(args):
     my_t, opp_tactics_list, my_stats, opp_stats, iters_per_opp, min_c, max_c, tourn_coef, my_fouls_avg, opp_fouls_avg = args
     
     total_wins = 0
+    total_losses = 0
     total_my_goals = 0
     master_score_counts = {}
     
@@ -18,11 +19,12 @@ def evaluate_tactic_worker(args):
     engine = ButsaMatchEngine(my_stats, opp_stats, my_t, opp_tactics_list[0], min_c, max_c, tourn_coef, my_fouls_avg, opp_fouls_avg)
     
     for opp_t in opp_tactics_list:
-        # Просто "перевдягаємо" тактику суперника без створення нового об'єкту
         engine.t_opp = opp_t 
         sim = engine.run_monte_carlo(iters_per_opp)
         
         total_wins += sim['wins']
+        # [НОВЕ] Рахуємо поразки
+        total_losses += sim['losses'] 
         total_my_goals += sim['my_goals']
         
         for score, count in sim['score_counts'].items():
@@ -30,6 +32,8 @@ def evaluate_tactic_worker(args):
 
     total_matches = len(opp_tactics_list) * iters_per_opp
     winrate = (total_wins / total_matches) * 100 if total_matches > 0 else 0
+    # [НОВЕ] Вираховуємо відсоток поразок
+    loss_rate = (total_losses / total_matches) * 100 if total_matches > 0 else 0 
     avg_goals = total_my_goals / total_matches if total_matches > 0 else 0
     
     most_likely_score = "0:0"
@@ -41,6 +45,7 @@ def evaluate_tactic_worker(args):
     return {
         'combo': my_t, 
         'winrate': winrate, 
+        'loss_rate': loss_rate, # [НОВЕ] Передаємо в оптимізатор
         'avg_goals': avg_goals,
         'most_likely_score': most_likely_score,
         'score_prob': score_prob
@@ -62,8 +67,29 @@ class ButsaMatchEngine:
         t = self.t_my if is_me else self.t_opp
         
         # Тактика (Атака/Захист)
-        atk_w = 1.0 + (t['tactic_val'] - 47) / 146.0
-        def_w = 1.0 + (47 - t['tactic_val']) / 146.0
+        t_val = t['tactic_val']
+        diff = abs(t_val - 51)
+        
+        # Базовий лінійний бонус (росте рівномірно)
+        base_bonus = diff / 153.0
+        
+        # Прогресивний штраф (росте в квадраті). 
+        # (diff / 40.0) - це "відсоток" крайності, від 0 до 1.
+        # Множник 0.15 визначає, наскільки жорсткою буде "прірва" на крайнощах.
+        progressive_penalty = base_bonus + ((diff / 40.0) ** 2) * 0.07 
+        
+        if t_val > 51:
+            # Атакуюча тактика
+            atk_w = 1.0 + base_bonus
+            def_w = 1.0 - progressive_penalty
+        elif t_val < 51:
+            # Захисна тактика
+            atk_w = 1.0 - progressive_penalty
+            def_w = 1.0 + base_bonus
+        else:
+            # Баланс
+            atk_w = 1.0
+            def_w = 1.0
         
         dens_b = t['dens_btwn']
         dens_i = t['dens_in']
@@ -77,7 +103,9 @@ class ButsaMatchEngine:
             if dens_b < 41: pass_mod = 1.1       # Широко (бонус)
             elif dens_b > 60: pass_mod = 0.92     # Скупченість (штраф)
         elif t['pass_type'] == 'Змішані':
-            if 41 <= dens_b <= 60: pass_mod = 1.01 # Легкий бонус за баланс
+            if 41 <= dens_b <= 60: pass_mod = 1.1 # Легкий бонус за баланс
+            elif dens_b > 60: pass_mod = 0.92     # [ОНОВЛЕНО] Штраф за скупченість
+            elif dens_b < 41: pass_mod = 0.92
             
         # 2. СТРАТЕГІЯ (Щільність В лініях) та УДАР
         strat_mod = 1.0
@@ -94,10 +122,11 @@ class ButsaMatchEngine:
         elif t['strat'] == 'Дальні удари':
             strat_mod = 0.92                      # Важче пройти захист (б'ємо здалеку)
             shot_boost = 1.1                     # Але удар небезпечніший
-            if 41 <= dens_i <= 60: strat_mod = 1.01 # Легкий бонус за баланс
             
         elif t['strat'] == 'Нормальна':
-            if 41 <= dens_i <= 60: strat_mod = 1.01  # Легкий бонус за баланс
+            if 41 <= dens_i <= 60: strat_mod = 1.05  # Легкий бонус за баланс
+            elif dens_i > 60: strat_mod = 0.96     # [ОНОВЛЕНО] Штраф 5% за скупченість
+            elif dens_i < 41: strat_mod = 0.96
             
         return atk_w, def_w, pass_mod, strat_mod, shot_boost
 
@@ -113,14 +142,12 @@ class ButsaMatchEngine:
             # s1 отримує бонус, якщо б'є s2
             if s1 == 'Гра в пас' and s2 == 'Технічна гра': return 1.1
             if s1 == 'Дальні удари' and s2 == 'Гра в пас': return 1.1
-            if s1 == 'Нормальна' and s2 == 'Дальні удари': return 1.1
-            if s1 == 'Технічна гра' and s2 == 'Нормальна': return 1.1
+            if s1 == 'Технічна гра' and s2 == 'Дальні удари': return 1.1
             
             # s1 отримує штраф, якщо s2 б'є його
             if s1 == 'Технічна гра' and s2 == 'Гра в пас': return 0.92
             if s1 == 'Гра в пас' and s2 == 'Дальні удари': return 0.92
-            if s1 == 'Дальні удари' and s2 == 'Нормальна': return 0.92
-            if s1 == 'Нормальна' and s2 == 'Технічна гра': return 0.92
+            if s1 == 'Дальні удари' and s2 == 'Технічна гра': return 0.92
             
             return 1.0 # Нейтральні або однакові тактики
 
@@ -237,12 +264,12 @@ class ButsaMatchEngine:
             # Якщо програв дуель, пресинг погіршує твою ситуацію (-0.10)
             
             if self.t_my['press'] == 'ТАК':
-                if my_pass_bonus > 1.0: my_pass_bonus += 0.09  
-                elif my_pass_bonus < 1.0: my_pass_bonus -= 0.09 
+                if my_pass_bonus > 1.0: my_pass_bonus += 0.04  
+                elif my_pass_bonus < 1.0: my_pass_bonus -= 0.04 
 
             if self.t_opp['press'] == 'ТАК':
-                if opp_pass_bonus > 1.0: opp_pass_bonus += 0.09
-                elif opp_pass_bonus < 1.0: opp_pass_bonus -= 0.09
+                if opp_pass_bonus > 1.0: opp_pass_bonus += 0.04
+                elif opp_pass_bonus < 1.0: opp_pass_bonus -= 0.04
 
             # Застосовуємо фінальні бонуси до центру поля
             my_mid *= my_pass_bonus
@@ -371,13 +398,13 @@ class TacticsOptimizer:
                 # Якщо передали свій ручний список
                 self.opp_tactics_list = opp_tactics_input
         else:
-            # Якщо нічого не передали (opp_tactics_input=None) - ГЕНЕРУЄМО 3000 ВАРІАНТІВ
+            # Якщо нічого не передали (opp_tactics_input=None) - ГЕНЕРУЄМО 4320 ВАРІАНТІВ
             opp_passes = ['Короткі', 'Змішані', 'Дальні']
             opp_strats = ['Нормальна', 'Гра в пас', 'Технічна гра', 'Дальні удари']
             opp_press = ['ТАК', 'НІ']
             opp_tac_opts = [11, 31, 51, 71, 91]
-            opp_din_opts = [11, 31, 51, 71, 91]
-            opp_dbt_opts = [11, 31, 51, 71, 91]
+            opp_din_opts = [29, 38, 47, 56, 65, 74]
+            opp_dbt_opts = [29, 38, 47, 56, 65, 74]
 
             opp_all_combos = list(itertools.product(opp_passes, opp_strats, opp_press, opp_tac_opts, opp_din_opts, opp_dbt_opts))
             self.opp_tactics_list = []
@@ -388,19 +415,19 @@ class TacticsOptimizer:
                 })
 
     def find_best_tactic(self):
-        # 1. 3000 ВАШИХ КОМБІНАЦІЙ
+        # 1. 4320 ВАШИХ КОМБІНАЦІЙ
         my_passes = ['Короткі', 'Змішані', 'Дальні']
         my_strats = ['Нормальна', 'Гра в пас', 'Технічна гра', 'Дальні удари']
         my_press = ['ТАК', 'НІ']
         my_tac_opts = [11, 31, 51, 71, 91]
-        my_din_opts = [11, 31, 51, 71, 91]
-        my_dbt_opts = [11, 31, 51, 71, 91]
+        my_din_opts = [29, 38, 47, 56, 65, 74]
+        my_dbt_opts = [29, 38, 47, 56, 65, 74]
 
         my_all_combos = list(itertools.product(my_passes, my_strats, my_press, my_tac_opts, my_din_opts, my_dbt_opts))
 
         # 2. ДИНАМІЧНА КІЛЬКІСТЬ ІТЕРАЦІЙ
         # Якщо тестуємо проти 1 тактики Тренера, треба багато матчів (200) для точності.
-        # Якщо тестуємо проти 3000 тактик, достатньо 2 матчів (бо 3000*2 = 6000 матчів сумарно).
+        # Якщо тестуємо проти 4320 тактик, достатньо 2 матчів (бо 4320*2 = 8640 матчів сумарно).
         iters_per_opp = 200 if len(self.opp_tactics_list) == 1 else 1
 
         # 3. ПІДГОТОВКА ДАНИХ ДЛЯ ЯДЕР ПРОЦЕСОРА
@@ -421,5 +448,5 @@ class TacticsOptimizer:
         )
 
         # Сортуємо: 1) Вінрейт 2) Голи
-        results.sort(key=lambda x: (round(x['winrate'] * 2) / 2, x['avg_goals']), reverse=True)
+        results.sort(key=lambda x: (round(x['winrate'] * 2) / 2, -x['loss_rate'], x['avg_goals']), reverse=True)
         return results[:3]
