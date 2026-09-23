@@ -19,7 +19,7 @@ def evaluate_tactic_worker(args):
     engine = ButsaMatchEngine(my_stats, opp_stats, my_t, opp_tactics_list[0], min_c, max_c, tourn_coef, my_fouls_avg, opp_fouls_avg)
     
     for opp_t in opp_tactics_list:
-        engine.t_opp = opp_t 
+        engine.set_opponent_tactic(opp_t)
         sim = engine.run_monte_carlo(iters_per_opp)
         
         total_wins += sim['wins']
@@ -62,6 +62,17 @@ class ButsaMatchEngine:
         self.tourn_coef = tourn_coef
         self.my_fouls_avg = my_fouls_avg   # [НОВЕ]
         self.opp_fouls_avg = opp_fouls_avg # [НОВЕ]
+
+        # [ОПТИМІЗАЦІЯ]: t_my не міняється протягом життя engine, тож рахуємо його
+        # тактичні множники один раз, а не на кожен simulate_match()
+        self._my_mult = self.get_tactical_multipliers(True)
+        self._opp_mult = self.get_tactical_multipliers(False)
+
+    def set_opponent_tactic(self, opp_tactics):
+        """Міняє тактику суперника і перераховує її множники один раз,
+        замість того щоб робити це на кожен епізод/матч."""
+        self.t_opp = opp_tactics
+        self._opp_mult = self.get_tactical_multipliers(False)
 
     def get_tactical_multipliers(self, is_me=True):
         t = self.t_my if is_me else self.t_opp
@@ -134,9 +145,10 @@ class ButsaMatchEngine:
         my_goals, opp_goals = 0, 0
         total_chances = random.randint(self.min_c, self.max_c)
 
-        # Розпаковуємо всі 5 коефіцієнтів (включно з shot_boost)
-        m_atk_w, m_def_w, m_pass_m, m_strat_m, m_shot_boost = self.get_tactical_multipliers(True)
-        o_atk_w, o_def_w, o_pass_m, o_strat_m, o_shot_boost = self.get_tactical_multipliers(False)
+        # Розпаковуємо всі 5 коефіцієнтів (включно з shot_boost) з кешу -
+        # вони залежать лише від тактик, а не від конкретного матчу
+        m_atk_w, m_def_w, m_pass_m, m_strat_m, m_shot_boost = self._my_mult
+        o_atk_w, o_def_w, o_pass_m, o_strat_m, o_shot_boost = self._opp_mult
 
         def get_rps_multiplier(s1, s2):
             # s1 отримує бонус, якщо б'є s2
@@ -329,7 +341,7 @@ class ButsaMatchEngine:
                             opp_goals += 1
                         continue 
                     else:
-                        foul_def_penalty = 0.85 
+                        foul_def_penalty = 0.92 
                 else:
                     foul_def_penalty = 1.0
 
@@ -426,8 +438,9 @@ class TacticsOptimizer:
         my_all_combos = list(itertools.product(my_passes, my_strats, my_press, my_tac_opts, my_din_opts, my_dbt_opts))
 
         # 2. ДИНАМІЧНА КІЛЬКІСТЬ ІТЕРАЦІЙ
-        # Якщо тестуємо проти 1 тактики Тренера, треба багато матчів (200) для точності.
-        # Якщо тестуємо проти 4320 тактик, достатньо 2 матчів (бо 4320*2 = 8640 матчів сумарно).
+        # Якщо тестуємо проти 1 тактики Тренера (режим відладки), треба багато матчів (200) для точності.
+        # Якщо тестуємо проти всіх 4320 тактик (основний режим), достатньо 1 матчу на опонента
+        # (4320*1 = 4320 матчів сумарно на кожну мою тактику).
         iters_per_opp = 200 if len(self.opp_tactics_list) == 1 else 1
 
         # 3. ПІДГОТОВКА ДАНИХ ДЛЯ ЯДЕР ПРОЦЕСОРА
