@@ -107,7 +107,8 @@ with col_me:
         
         # Функція форматування: показуємо і Номінал, і Реал
         def format_func(player):
-            return f"{player['name']} [{player['pos'][0]} | Nom:{player['nominal_power']:.1f} Real:{player['real_power']:.1f}]"
+            tag = " 🚑ТРАВМА" if player.get('is_injured') else ""
+            return f"{player['name']}{tag} [{player['pos'][0]} | Nom:{player['nominal_power']:.1f} Real:{player['real_power']:.1f}]"
 
         all_players = st.session_state.my_roster
         
