@@ -111,15 +111,22 @@ with col_me:
             return f"{player['name']}{tag} [{player['pos'][0]} | Nom:{player['nominal_power']:.1f} Real:{player['real_power']:.1f}]"
 
         all_players = st.session_state.my_roster
-        
-        gks = [p for p in all_players if 'GK' in p['pos']]
-        defs = [p for p in all_players if any(x in p['pos'] for x in lg.get_valid_pos_list('def'))]
-        mids = [p for p in all_players if any(x in p['pos'] for x in lg.get_valid_pos_list('mid'))]
-        atts = [p for p in all_players if any(x in p['pos'] for x in lg.get_valid_pos_list('att'))]
 
+        # Гравець з кількома позиціями зникає з наступних списків, щойно його
+        # вибрано в попередній лінії (порядок: GK -> DEF -> MID -> ATT)
+        gks = [p for p in all_players if 'GK' in p['pos']]
         sel_gk = st.selectbox("Воротар (GK)", gks, format_func=format_func)
+        taken_names = {sel_gk['name']} if sel_gk else set()
+
+        defs = [p for p in all_players if any(x in p['pos'] for x in lg.get_valid_pos_list('def')) and p['name'] not in taken_names]
         sel_defs = st.multiselect("Захист (DEF)", defs, format_func=format_func)
+        taken_names |= {p['name'] for p in sel_defs}
+
+        mids = [p for p in all_players if any(x in p['pos'] for x in lg.get_valid_pos_list('mid')) and p['name'] not in taken_names]
         sel_mids = st.multiselect("Півзахист (MID)", mids, format_func=format_func)
+        taken_names |= {p['name'] for p in sel_mids}
+
+        atts = [p for p in all_players if any(x in p['pos'] for x in lg.get_valid_pos_list('att')) and p['name'] not in taken_names]
         sel_atts = st.multiselect("Напад (ATT)", atts, format_func=format_func)
 
         # Рахуємо Номінал (для ліміту) і Реал (для тактики)

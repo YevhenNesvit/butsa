@@ -1,8 +1,11 @@
 # --- КОНСТАНТИ СХЕМ ---
 ALL_FORMATIONS = {
     '1-6-3': {'def': 1, 'mid': 6, 'att': 3},
+    '1-7-2': {'def': 1, 'mid': 7, 'att': 2},
     '2-5-3': {'def': 2, 'mid': 5, 'att': 3},
     '2-6-2': {'def': 2, 'mid': 6, 'att': 2},
+    '2-7-1': {'def': 2, 'mid': 7, 'att': 1},
+    '3-3-4': {'def': 3, 'mid': 3, 'att': 4},
     '3-4-3': {'def': 3, 'mid': 4, 'att': 3},
     '3-5-2': {'def': 3, 'mid': 5, 'att': 2},
     '3-6-1': {'def': 3, 'mid': 6, 'att': 1},
@@ -17,14 +20,13 @@ ALL_FORMATIONS = {
 def calculate_nominal_power(player, is_home=False):
     return player['power']
 
+def morale_coef(player, is_home):
+    cur_mor = player.get('morale', 13) + (4 if is_home else 0)
+    return 1.0 + (cur_mor - 13) * 0.004
+
 def calculate_real_power(player, is_home):
-    base = player['power']
     stam_coef = player.get('stamina', 100) / 100.0
-    mor = player.get('morale', 13)
-    home_bonus = 4 if is_home else 0
-    cur_mor = mor + home_bonus
-    mor_coef = 1.0 + (cur_mor - 13) * 0.004
-    return base * stam_coef * mor_coef
+    return player['power'] * stam_coef * morale_coef(player, is_home)
 
 def calculate_line_power(players_list):
     if not players_list: return 0
@@ -191,7 +193,6 @@ def analyze_bonuses(squad_dict):
         'technique_att': 0, # Тх у нападі
         'crossing_wing': 0, # Нв на флангах (Def/Mid/Att)
         'heading_att': 0,   # Гл у форвардів
-        'speed_total': 0,    # Ск загальна
         'athleticism_total': 0,  # [НОВИЙ БОНУС] Ат (Атлетизм)
         'interception_total': 0, # [НОВИЙ БОНУС] Пр (Перехват)
         'tackle_total': 0,       # [НОВИЙ БОНУС] От (Отбор)
@@ -209,7 +210,6 @@ def analyze_bonuses(squad_dict):
     wing_positions = ['LD', 'RD', 'LWD', 'RWD', 'LM', 'RM', 'LW', 'RW']
     all_field = squad_dict['def'] + squad_dict['mid'] + squad_dict['att']
     for p in all_field:
-        stats['speed_total'] += p.get('bonuses', {}).get('Ск', 0)
         stats['athleticism_total'] += p.get('bonuses', {}).get('Ат', 0)  # [НОВИЙ БОНУС]
         stats['interception_total'] += p.get('bonuses', {}).get('Пр', 0) # [НОВИЙ БОНУС]
         stats['tackle_total'] += p.get('bonuses', {}).get('Пд', 0)
@@ -243,10 +243,7 @@ def analyze_skills(squad_dict, is_home=False):
     all_players = squad_dict['gk'] + squad_dict['def'] + squad_dict['mid'] + squad_dict['att']
 
     def get_mor_coef(p):
-        mor = p.get('morale', 13)
-        home_bonus = 4 if is_home else 0
-        cur_mor = mor + home_bonus
-        return 1.0 + (cur_mor - 13) * 0.004
+        return morale_coef(p, is_home)
 
     # [ЗМІНЕНО] Тепер рахуємо суму замість середнього (avg_skill -> sum_skill)
     def sum_skill(players, skill_names):
@@ -293,7 +290,7 @@ def prepare_engine_stats(my_team, opp_stats, is_my_home=False, is_opp_home=False
     opp_b = analyze_bonuses(opp_stats['squad_dict'])
     opp_s = analyze_skills(opp_stats['squad_dict'], is_home=is_opp_home) 
     
-    my_b = analyze_bonuses(my_team['squad_dict']) if 'squad_dict' in my_team else {'playmaker_mid': 0, 'technique_att': 0, 'crossing_wing': 0, 'heading_att': 0, 'speed_total': 0, 'athleticism_total': 0, 'interception_total': 0, 'tackle_total': 0}
+    my_b = analyze_bonuses(my_team['squad_dict']) if 'squad_dict' in my_team else {'playmaker_mid': 0, 'technique_att': 0, 'crossing_wing': 0, 'heading_att': 0, 'athleticism_total': 0, 'interception_total': 0, 'tackle_total': 0}
     my_s = analyze_skills(my_team['squad_dict'], is_home=is_my_home) if 'squad_dict' in my_team else {'team_pass': 0, 'team_reception': 0, 'team_tackle': 0, 'team_dribble': 0, 'expected_shot_power': 0, 'expected_shot_acc': 0, 'team_stamina': 0, 'gk_skill': 0}
 
     def calc_eff(base_stats, bonuses):
@@ -313,14 +310,9 @@ def get_tactical_advice(my_team, opp_stats, best_meta, is_opp_home):
     my_tot = my_team['def'] + my_team['mid'] + my_team['att']
     diff = my_tot - opp_stats['real_total']
     
-    my_eng, opp_eng, my_b, opp_b = prepare_engine_stats(my_team, opp_stats, not is_opp_home, is_opp_home)
+    my_eng, opp_eng, _, opp_b = prepare_engine_stats(my_team, opp_stats, not is_opp_home, is_opp_home)
 
-    mid_ratio = my_team['mid'] / opp_stats['mid'] if opp_stats['mid'] > 0 else 1.0
-    opp_mid_adv = opp_stats['mid'] / my_team['mid'] if my_team['mid'] > 0 else 1.0
-    opp_att_adv = opp_stats['att'] / my_team['def'] if my_team['def'] > 0 else 1.0
-    
     cfs = best_meta['c']
-    wings = min(best_meta['w'], 2)
 
     # ---------------------------------------------------------
     # 1. ТЕКСТОВИЙ АНАЛІЗ СУПЕРНИКА
