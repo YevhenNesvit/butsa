@@ -295,12 +295,12 @@ if st.session_state.opp_roster and my_team_stats:
                 else:
                     tourn_coef = 1.0
 
-                # [ВИПРАВЛЕНО] Завжди використовуємо Тотальний Аналіз (4320 комбінацій)
-                st.warning("⚠️ ШІ прораховує 4320 ваших комбінацій проти 4320 можливих тактик суперника. Зачекайте...")
+                # [ВИПРАВЛЕНО] Завжди використовуємо Тотальний Аналіз (1080 комбінацій)
+                st.warning("⚠️ ШІ прораховує 1080 ваших комбінацій проти 1080 можливих тактик суперника. Зачекайте...")
                 
                 optimizer = me.TacticsOptimizer(
                     my_eng, opp_eng, 
-                    opp_tactics_input=None, # None означає, що ШІ тестує проти всіх 4320 варіантів
+                    opp_tactics_input=None, # None означає, що ШІ тестує проти всіх 1080 варіантів
                     min_c=min_chances, max_c=max_chances, 
                     tourn_coef=tourn_coef, 
                     my_fouls_avg=my_fouls_input, opp_fouls_avg=opp_fouls_input

@@ -3,13 +3,21 @@ import itertools
 import os
 from joblib import Parallel, delayed
 
+# Двоетапний пошук: скільки найкращих тактик етапу 1 перераховувати і на скількох
+# матчах проти кожного суперника
+REFINE_TOP_K = 30
+REFINE_ITERS_PER_OPP = 40
+
 # =====================================================================
 # ФУНКЦІЯ-РОБІТНИК ДЛЯ БАГАТОЯДЕРНОСТІ
 # Вона має бути поза класами, щоб Windows міг передати її іншим ядрам процесора
 # =====================================================================
 def evaluate_tactic_worker(args):
-    my_t, opp_tactics_list, my_stats, opp_stats, iters_per_opp, min_c, max_c, tourn_coef, my_fouls_avg, opp_fouls_avg = args
-    
+    my_t, opp_tactics_list, my_stats, opp_stats, iters_per_opp, min_c, max_c, tourn_coef, my_fouls_avg, opp_fouls_avg, *rest = args
+    # Необов'язковий seed_base: однакові випадкові числа проти кожного суперника для всіх
+    # моїх тактик (зменшує шум у порівнянні тактик між собою)
+    seed_base = rest[0] if rest else None
+
     total_wins = 0
     total_losses = 0
     total_my_goals = 0
@@ -18,8 +26,10 @@ def evaluate_tactic_worker(args):
     # [ОПТИМІЗАЦІЯ 1]: Створюємо стадіон ЛИШЕ ОДИН РАЗ!
     engine = ButsaMatchEngine(my_stats, opp_stats, my_t, opp_tactics_list[0], min_c, max_c, tourn_coef, my_fouls_avg, opp_fouls_avg)
     
-    for opp_t in opp_tactics_list:
+    for opp_idx, opp_t in enumerate(opp_tactics_list):
         engine.set_opponent_tactic(opp_t)
+        if seed_base is not None:
+            random.seed(seed_base * 100003 + opp_idx)
         sim = engine.run_monte_carlo(iters_per_opp)
         
         total_wins += sim['wins']
@@ -68,6 +78,24 @@ class ButsaMatchEngine:
         self._my_mult = self.get_tactical_multipliers(True)
         self._opp_mult = self.get_tactical_multipliers(False)
 
+        # Орієнтовна частка епізодів, де атакуємо ми (за сирим володінням),
+        # потрібна лише для розрахунку шансу фолу
+        total_poss = self.my.get('possession', 0) + self.opp.get('possession', 0)
+        my_share = self.my.get('possession', 0) / total_poss if total_poss > 0 else 0.5
+        self._my_attack_share = min(0.8, max(0.2, my_share))
+
+    def get_foul_chances(self, total_chances):
+        """Шанс фолу на один епізод, коли команда захищається. Фоли трапляються
+        лише в епізодах суперника, тому ділимо на очікувану кількість саме таких
+        епізодів, а не на всі епізоди матчу (інакше фолів буде вдвічі менше за середнє)."""
+        if total_chances <= 0:
+            return 0.0, 0.0
+        opp_attacks = total_chances * (1.0 - self._my_attack_share)
+        my_attacks = total_chances * self._my_attack_share
+        my_foul_chance = min(1.0, self.my_fouls_avg / opp_attacks)
+        opp_foul_chance = min(1.0, self.opp_fouls_avg / my_attacks)
+        return my_foul_chance, opp_foul_chance
+
     def set_opponent_tactic(self, opp_tactics):
         """Міняє тактику суперника і перераховує її множники один раз,
         замість того щоб робити це на кожен епізод/матч."""
@@ -86,7 +114,7 @@ class ButsaMatchEngine:
         
         # Прогресивний штраф (росте в квадраті). 
         # (diff / 40.0) - це "відсоток" крайності, від 0 до 1.
-        # Множник 0.15 визначає, наскільки жорсткою буде "прірва" на крайнощах.
+        # Множник 0.07 визначає, наскільки жорсткою буде "прірва" на крайнощах.
         progressive_penalty = base_bonus + ((diff / 40.0) ** 2) * 0.07 
         
         if t_val > 51:
@@ -136,7 +164,7 @@ class ButsaMatchEngine:
             
         elif t['strat'] == 'Нормальна':
             if 41 <= dens_i <= 60: strat_mod = 1.05  # Легкий бонус за баланс
-            elif dens_i > 60: strat_mod = 0.96     # [ОНОВЛЕНО] Штраф 5% за скупченість
+            elif dens_i > 60: strat_mod = 0.96     # [ОНОВЛЕНО] Штраф 4% за скупченість
             elif dens_i < 41: strat_mod = 0.96
             
         return atk_w, def_w, pass_mod, strat_mod, shot_boost
@@ -188,8 +216,7 @@ class ButsaMatchEngine:
         my_current_fatigue = 0.0
         opp_current_fatigue = 0.0
 
-        my_base_foul_chance = self.my_fouls_avg / total_chances if total_chances > 0 else 0
-        opp_base_foul_chance = self.opp_fouls_avg / total_chances if total_chances > 0 else 0
+        my_base_foul_chance, opp_base_foul_chance = self.get_foul_chances(total_chances)
 
         for minute in range(total_chances):
             # 1. РОЗУМНИЙ ПРЕСИНГ (За офіційними правилами Бутси)
@@ -272,8 +299,8 @@ class ButsaMatchEngine:
                 elif self.t_my['pass_type'] == 'Змішані': opp_pass_bonus = 0.92
 
             # --- ВПЛИВ ПРЕСИНГУ (Множник ризику) ---
-            # Якщо ти виграв дуель пасів, пресинг добиває суперника (+0.10)
-            # Якщо програв дуель, пресинг погіршує твою ситуацію (-0.10)
+            # Якщо ти виграв дуель пасів, пресинг добиває суперника (+0.04)
+            # Якщо програв дуель, пресинг погіршує твою ситуацію (-0.04)
             
             if self.t_my['press'] == 'ТАК':
                 if my_pass_bonus > 1.0: my_pass_bonus += 0.04  
@@ -295,7 +322,7 @@ class ButsaMatchEngine:
             # 3. АТАКА vs ЗАХИСТ
             if attacker == 'me':
                 # --- ЛОГІКА ФОЛІВ ---
-                # Якщо суперник пресингує, він фолить частіше (x1.5)
+                # Якщо суперник пресингує, він фолить частіше (x1.19)
                 opp_foul_chance = opp_base_foul_chance * 1.19 if opp_is_pressing_now else opp_base_foul_chance
                 
                 if random.random() < opp_foul_chance: 
@@ -410,13 +437,13 @@ class TacticsOptimizer:
                 # Якщо передали свій ручний список
                 self.opp_tactics_list = opp_tactics_input
         else:
-            # Якщо нічого не передали (opp_tactics_input=None) - ГЕНЕРУЄМО 4320 ВАРІАНТІВ
+            # Якщо нічого не передали (opp_tactics_input=None) - ГЕНЕРУЄМО 1080 ВАРІАНТІВ
             opp_passes = ['Короткі', 'Змішані', 'Дальні']
             opp_strats = ['Нормальна', 'Гра в пас', 'Технічна гра', 'Дальні удари']
             opp_press = ['ТАК', 'НІ']
             opp_tac_opts = [11, 31, 51, 71, 91]
-            opp_din_opts = [29, 38, 47, 56, 65, 74]
-            opp_dbt_opts = [29, 38, 47, 56, 65, 74]
+            opp_din_opts = [31, 51, 71]
+            opp_dbt_opts = [31, 51, 71]
 
             opp_all_combos = list(itertools.product(opp_passes, opp_strats, opp_press, opp_tac_opts, opp_din_opts, opp_dbt_opts))
             self.opp_tactics_list = []
@@ -427,39 +454,59 @@ class TacticsOptimizer:
                 })
 
     def find_best_tactic(self):
-        # 1. 4320 ВАШИХ КОМБІНАЦІЙ
+        # 1. 1080 ВАШИХ КОМБІНАЦІЙ (щільність: 31 свободно, 51 нормально, 71 щільно)
         my_passes = ['Короткі', 'Змішані', 'Дальні']
         my_strats = ['Нормальна', 'Гра в пас', 'Технічна гра', 'Дальні удари']
         my_press = ['ТАК', 'НІ']
         my_tac_opts = [11, 31, 51, 71, 91]
-        my_din_opts = [29, 38, 47, 56, 65, 74]
-        my_dbt_opts = [29, 38, 47, 56, 65, 74]
+        my_din_opts = [31, 51, 71]
+        my_dbt_opts = [31, 51, 71]
 
         my_all_combos = list(itertools.product(my_passes, my_strats, my_press, my_tac_opts, my_din_opts, my_dbt_opts))
 
         # 2. ДИНАМІЧНА КІЛЬКІСТЬ ІТЕРАЦІЙ
         # Якщо тестуємо проти 1 тактики Тренера (режим відладки), треба багато матчів (200) для точності.
-        # Якщо тестуємо проти всіх 4320 тактик (основний режим), достатньо 1 матчу на опонента
-        # (4320*1 = 4320 матчів сумарно на кожну мою тактику).
-        iters_per_opp = 200 if len(self.opp_tactics_list) == 1 else 1
+        # Якщо тестуємо проти всіх 1080 тактик (основний режим), беремо 4 матчі на опонента
+        # (1080*4 = 4320 матчів сумарно на кожну мою тактику - стільки ж, скільки раніше
+        # давала сітка з 4320 суперниками, але при 4x меншому загальному обсязі розрахунків).
+        iters_per_opp = 200 if len(self.opp_tactics_list) == 1 else 4
 
-        # 3. ПІДГОТОВКА ДАНИХ ДЛЯ ЯДЕР ПРОЦЕСОРА
-        worker_args = []
-        for my_combo in my_all_combos:
-            my_t = {
-                'pass_type': my_combo[0], 'strat': my_combo[1], 'press': my_combo[2],
-                'tactic_val': my_combo[3], 'dens_in': my_combo[4], 'dens_btwn': my_combo[5]
-            }
-            worker_args.append((my_t, self.opp_tactics_list, self.my, self.opp, iters_per_opp, self.min_c, self.max_c, self.tourn_coef, self.my_fouls_avg, self.opp_fouls_avg))
-        
+        my_tactics = [{
+            'pass_type': c[0], 'strat': c[1], 'press': c[2],
+            'tactic_val': c[3], 'dens_in': c[4], 'dens_btwn': c[5]
+        } for c in my_all_combos]
+
         # [ОПТИМІЗАЦІЯ 2]: Запуск через Joblib (Безпечно для Streamlit!)
-        cores_to_use = max(1, os.cpu_count() - 1) 
-        
-        # Joblib автоматично обійде всі проблеми з пам'яттю і GIL
-        results = Parallel(n_jobs=cores_to_use)(
-            delayed(evaluate_tactic_worker)(arg) for arg in worker_args
-        )
+        cores_to_use = max(1, os.cpu_count() - 1)
 
-        # Сортуємо: 1) Вінрейт 2) Голи
-        results.sort(key=lambda x: (round(x['winrate'] * 2) / 2, -x['loss_rate'], x['avg_goals']), reverse=True)
-        return results[:3]
+        def evaluate(tactics, iters, seed_base):
+            worker_args = [
+                (t, self.opp_tactics_list, self.my, self.opp, iters, self.min_c, self.max_c,
+                 self.tourn_coef, self.my_fouls_avg, self.opp_fouls_avg, seed_base)
+                for t in tactics
+            ]
+            # Joblib автоматично обійде всі проблеми з пам'яттю і GIL
+            return Parallel(n_jobs=cores_to_use)(
+                delayed(evaluate_tactic_worker)(arg) for arg in worker_args
+            )
+
+        # Сортуємо: 1) Вінрейт 2) Менше поразок 3) Голи
+        def rank(results):
+            results.sort(key=lambda x: (round(x['winrate'] * 2) / 2, -x['loss_rate'], x['avg_goals']), reverse=True)
+
+        # ЕТАП 1: швидкий відбір усіх тактик
+        results = evaluate(my_tactics, iters_per_opp, seed_base=1)
+        rank(results)
+
+        # Режим одного суперника вже рахується на 200 матчів, уточнення не потрібне
+        if len(self.opp_tactics_list) == 1:
+            return results[:3]
+
+        # ЕТАП 2: шум етапу 1 (SD ~0.6%) порівнянний з різницею між топовими тактиками,
+        # тож перераховуємо лише топ на більшій кількості матчів і з іншими випадковими
+        # числами (інакше вибрані "щасливчики" лишилися б завищеними). Заодно відсотки
+        # у результаті чесніші, без ефекту "найкращий з багатьох".
+        top = [r['combo'] for r in results[:REFINE_TOP_K]]
+        refined = evaluate(top, REFINE_ITERS_PER_OPP, seed_base=2)
+        rank(refined)
+        return refined[:3]

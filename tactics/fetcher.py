@@ -2,18 +2,23 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 # ==============================================================================
 # МОДУЛЬ ФЕТЧІНГУ ДАНИХ (Хвилини + Бонуси + УМІННЯ)
 # ==============================================================================
 
-def get_soup(url, cookie):
+REQUEST_TIMEOUT = 15  # секунд на один запит
+FETCH_THREADS = 4     # скільки профілів гравців вантажимо паралельно
+
+def get_soup(url, cookie, session=None):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
         'Cookie': f'PHPSESSID={cookie}'
     }
     try:
-        r = requests.get(url, headers=headers)
+        # session перевикористовує з'єднання між запитами замість нового на кожен
+        r = (session or requests).get(url, headers=headers, timeout=REQUEST_TIMEOUT)
         r.encoding = 'utf-8' 
         if r.status_code == 200:
             return BeautifulSoup(r.text, 'html.parser')
@@ -21,7 +26,7 @@ def get_soup(url, cookie):
         print(f"Error fetching: {e}")
     return None
 
-def parse_player_details(player_url, cookie, target_tournament):
+def parse_player_details(player_url, cookie, target_tournament, session=None):
     """
     Заходить у профіль гравця і тягне:
     1. Хвилини
@@ -29,8 +34,8 @@ def parse_player_details(player_url, cookie, target_tournament):
     3. Уміння (Скіли)
     """
     full_url = "https://butsa.pro" + player_url if not player_url.startswith("http") else player_url
-    soup = get_soup(full_url, cookie)
-    
+    soup = get_soup(full_url, cookie, session)
+
     minutes = 0
     bonuses = {}
     skills = {}
@@ -91,7 +96,8 @@ def parse_player_details(player_url, cookie, target_tournament):
 
 
 def scrape_roster(url, cookie, tournament_name, progress_callback=None):
-    soup = get_soup(url, cookie)
+    session = requests.Session()
+    soup = get_soup(url, cookie, session)
     if not soup: return "Помилка", []
 
     team_name = "Команда"
@@ -106,12 +112,9 @@ def scrape_roster(url, cookie, tournament_name, progress_callback=None):
     links = soup.find_all('a', href=re.compile(r'/players/\d+$'))
     players = []
     processed_urls = set()
-    total_links = len(links)
-    
-    for i, link in enumerate(links):
-        if progress_callback:
-            progress_callback((i + 1) / total_links, i + 1, total_links)
-        
+    pending = []  # (базові дані гравця, href): профілі довантажуємо паралельно нижче
+
+    for link in links:
         href = link.get('href', '')
         if href in processed_urls: continue
         processed_urls.add(href)
@@ -142,23 +145,37 @@ def scrape_roster(url, cookie, tournament_name, progress_callback=None):
             m_match = re.search(r'\((\d+)\)', m_title)
             mor_val = int(m_match.group(1)) if m_match else 13
 
-            # [ЗМІНЕНО] Тепер розпаковуємо 3 змінні (включаючи skills)
-            mins, bonuses, skills = parse_player_details(href, cookie, tournament_name)
+            pending.append(((name, clean_pos, p_val, s_val, mor_val, is_injured), href))
 
-            players.append({
-                "name": name,
-                "pos": clean_pos,
-                "power": p_val,
-                "stamina": s_val,
-                "morale": mor_val,
-                "minutes": mins,
-                "is_injured": is_injured,
-                "bonuses": bonuses,
-                "skills": skills  # <--- Додали уміння
-            })
-            time.sleep(0.1)
-            
         except Exception:
             continue
-        
+
+    def load_player(item):
+        (name, clean_pos, p_val, s_val, mor_val, is_injured), href = item
+        try:
+            # [ЗМІНЕНО] Тепер розпаковуємо 3 змінні (включаючи skills)
+            mins, bonuses, skills = parse_player_details(href, cookie, tournament_name, session)
+            time.sleep(0.1)
+        except Exception:
+            return None
+        return {
+            "name": name,
+            "pos": clean_pos,
+            "power": p_val,
+            "stamina": s_val,
+            "morale": mor_val,
+            "minutes": mins,
+            "is_injured": is_injured,
+            "bonuses": bonuses,
+            "skills": skills  # <--- Додали уміння
+        }
+
+    # map зберігає порядок гравців, як у ростері
+    with ThreadPoolExecutor(max_workers=FETCH_THREADS) as pool:
+        for i, player in enumerate(pool.map(load_player, pending)):
+            if progress_callback:
+                progress_callback((i + 1) / len(pending), i + 1, len(pending))
+            if player:
+                players.append(player)
+
     return team_name, players
