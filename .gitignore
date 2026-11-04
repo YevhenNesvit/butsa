@@ -163,3 +163,5 @@ cython_debug/
 client_secret_*.json
 
 .vscode/
+# Локальні налаштування застосунку з cookie для входу, не комітити
+tactics/config.json
