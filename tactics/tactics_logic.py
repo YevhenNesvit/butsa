@@ -1,3 +1,6 @@
+import csv
+import os
+
 # --- КОНСТАНТИ СХЕМ ---
 ALL_FORMATIONS = {
     '1-6-3': {'def': 1, 'mid': 6, 'att': 3},
@@ -16,6 +19,40 @@ ALL_FORMATIONS = {
     '5-3-2': {'def': 5, 'mid': 3, 'att': 2},
     '5-4-1': {'def': 5, 'mid': 4, 'att': 1}
 }
+
+# --- ПАДІННЯ ФІЗГОТОВНОСТІ ЗА МАТЧ (help.butsa.ru, сторінка "Падение физготовности") ---
+# Відсотки падіння після повного офіційного матчу без замін. Таблиця лежить у data/fatigue_drop.csv:
+# рядки: витривалість 1..29 (разом з бонусом Ат), стовпці: вік 16..36.
+FATIGUE_TABLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'fatigue_drop.csv')
+
+def _load_fatigue_table(path=FATIGUE_TABLE_PATH):
+    with open(path, newline='', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        ages = [int(a) for a in next(reader)[1:]]
+        rows = {int(r[0]): [float(v) for v in r[1:]] for r in reader if r}
+    if ages != list(range(16, 37)) or sorted(rows) != list(range(1, 30)) or any(len(v) != len(ages) for v in rows.values()):
+        raise ValueError(f"{path}: очікується вік 16..36 у заголовку та рядки витривалості 1..29")
+    return rows
+
+_FATIGUE_ROWS = _load_fatigue_table()
+
+DEFAULT_AGE = 25  # якщо вік гравця невідомий (ростер завантажено без колонки "Воз")
+
+def match_fatigue_drop(endurance, age):
+    """Падіння фізготовності (%) за повний офіційний матч за таблицею вікі.
+    Білінійна інтерполяція між рядками витривалості й віком, значення за межами обрізаються."""
+    e = min(29.0, max(1.0, endurance))
+    a = min(36.0, max(16.0, age))
+    e0, a0 = int(e), int(a)
+    e1, a1 = min(29, e0 + 1), min(36, a0 + 1)
+    e_frac, a_frac = e - e0, a - a0
+
+    def at_endurance(row):
+        lo, hi = _FATIGUE_ROWS[row][a0 - 16], _FATIGUE_ROWS[row][a1 - 16]
+        return lo + (hi - lo) * a_frac
+
+    low = at_endurance(e0)
+    return low + (at_endurance(e1) - low) * e_frac
 
 def calculate_nominal_power(player, is_home=False):
     return player['power']
@@ -100,7 +137,8 @@ def solve_cap_puzzle(roster, formation, cap):
     bench = [p for p in sorted_roster if p['name'] not in used_names]
     bench.sort(key=lambda x: (x.get('minutes', 0), x['real_power']), reverse=True)
 
-    def calc_nom_total(sq): return sum(p['nominal_power'] for l in sq.values() for p in l)
+    # Номінал тепер із сотими: округляємо суму, щоб похибка float не змінювала порівняння з лімітом
+    def calc_nom_total(sq): return round(sum(p['nominal_power'] for l in sq.values() for p in l), 2)
     def calc_real_total(sq): return sum(p['real_power'] for l in sq.values() for p in l)
 
     curr_nom = calc_nom_total(starters)
@@ -146,7 +184,7 @@ def solve_cap_puzzle(roster, formation, cap):
                 for i, start_p in enumerate(starters[line]):
                     for sub_p in line_bench:
                         diff_nom = sub_p['nominal_power'] - start_p['nominal_power']
-                        if (curr_nom + diff_nom) <= cap:
+                        if round(curr_nom + diff_nom, 2) <= cap:
                             real_gain = sub_p['real_power'] - start_p['real_power']
                             if real_gain > max_real_gain:
                                 max_real_gain = real_gain
@@ -261,7 +299,23 @@ def analyze_skills(squad_dict, is_home=False):
     stats['team_tackle'] = sum_skill(all_players, ['Отбор', 'Опека']) # 2 скіли захисту
     
     stats['team_stamina'] = sum_skill(all_players, ['Выносливость']) / len(all_players) if all_players else 0
-    
+
+    # Падіння фізи за матч для кожного гравця за таблицею вікі (витривалість + рівні Ат, вік),
+    # далі середнє по команді. Кожен рівень Ат додає 1 до витривалості в матчі.
+    drops, endurances = [], []
+    for line in ('gk', 'def', 'mid', 'att'):
+        for p in squad_dict[line]:
+            if line == 'gk':
+                # У воротарів немає умінь, умовна витривалість приблизно мастерство/8 + 2
+                base_endurance = p.get('power', 0) / 8.0 + 2
+            else:
+                base_endurance = p.get('skills', {}).get('Выносливость', 0) * get_mor_coef(p)
+            endurance = base_endurance + p.get('bonuses', {}).get('Ат', 0)
+            drops.append(match_fatigue_drop(endurance, p.get('age') or DEFAULT_AGE))
+            endurances.append(endurance)
+    stats['fatigue_drop'] = sum(drops) / len(drops) if drops else None
+    stats['team_stamina_eff'] = sum(endurances) / len(endurances) if endurances else 0
+
     if squad_dict['gk']: 
         gk_p = squad_dict['gk'][0]
         stats['gk_skill'] = gk_p.get('skills', {}).get('Голкиперство', 0) * get_mor_coef(gk_p)
@@ -299,7 +353,10 @@ def prepare_engine_stats(my_team, opp_stats, is_my_home=False, is_opp_home=False
             'possession': base_stats['team_pass'] + rec_eff,
             'technique': base_stats['team_dribble'] + rec_eff,
             'tackle_eff': base_stats['team_tackle'] * (1 + (bonuses['tackle_total'] * 0.02)),
-            'stamina_eff': base_stats['team_stamina'] * (1 + (bonuses['athleticism_total'] * 0.02)),
+            # Ат вже враховано в team_stamina_eff (+1 до витривалості за рівень); стара формула
+            # лишається лише для статистики без складу
+            'stamina_eff': base_stats.get('team_stamina_eff', base_stats['team_stamina'] * (1 + (bonuses['athleticism_total'] * 0.02))),
+            'fatigue_drop': base_stats.get('fatigue_drop'),
             'shot_power': base_stats['expected_shot_power'],
             'shot_acc': base_stats['expected_shot_acc'],
             'gk_skill': base_stats['gk_skill']

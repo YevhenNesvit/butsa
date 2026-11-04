@@ -84,6 +84,19 @@ class ButsaMatchEngine:
         my_share = self.my.get('possession', 0) / total_poss if total_poss > 0 else 0.5
         self._my_attack_share = min(0.8, max(0.2, my_share))
 
+        # Падіння фізи за весь матч залежить лише від складів, тож рахуємо один раз
+        self._my_drop_pct = self.get_match_drop(self.my)
+        self._opp_drop_pct = self.get_match_drop(self.opp)
+
+    def get_match_drop(self, stats):
+        """Частка падіння фізи за весь матч. Якщо в статистиці є падіння за таблицею вікі
+        (fatigue_drop, у відсотках, залежить від витривалості, Ат і віку), беремо його,
+        інакше стара формула лише за середньою витривалістю."""
+        drop = stats.get('fatigue_drop')
+        if drop is not None:
+            return drop / 100.0 * self.tourn_coef
+        return max(0.04, (15.5 - (stats.get('stamina_eff', 0) / 3.0)) / 100.0) * self.tourn_coef
+
     def get_foul_chances(self, total_chances):
         """Шанс фолу на один епізод, коли команда захищається. Фоли трапляються
         лише в епізодах суперника, тому ділимо на очікувану кількість саме таких
@@ -205,12 +218,9 @@ class ButsaMatchEngine:
         my_gk = self.my.get('gk_skill', 0)
         opp_gk = self.opp.get('gk_skill', 0)
 
-        my_stam_val = self.my.get('stamina_eff', 0)
-        opp_stam_val = self.opp.get('stamina_eff', 0)
-        
         # Базове падіння фізики за весь матч
-        my_drop_pct = max(0.04, (15.5 - (my_stam_val / 3.0)) / 100.0) * self.tourn_coef
-        opp_drop_pct = max(0.04, (15.5 - (opp_stam_val / 3.0)) / 100.0) * self.tourn_coef
+        my_drop_pct = self._my_drop_pct
+        opp_drop_pct = self._opp_drop_pct
 
         # [НОВЕ] Накопичувачі втоми
         my_current_fatigue = 0.0
