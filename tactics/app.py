@@ -261,9 +261,9 @@ if st.session_state.opp_roster and my_team_stats:
         
         col1, col2 = st.columns(2)
         with col1:
-            my_shots = st.number_input("Ваші середні удари:", min_value=1, max_value=30, value=10, step=1)
+            my_shots = st.number_input("Ваші середні удари:", min_value=1, max_value=30, value=5, step=1)
         with col2:
-            opp_shots = st.number_input("Удари суперника:", min_value=1, max_value=30, value=10, step=1)
+            opp_shots = st.number_input("Удари суперника:", min_value=1, max_value=30, value=5, step=1)
             
         expected_total_shots = my_shots + opp_shots
         min_chances = int(expected_total_shots * 0.83)
