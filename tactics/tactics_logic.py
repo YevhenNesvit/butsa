@@ -1,6 +1,11 @@
 import csv
 import os
 
+# --- БОНУСИ ГРАВЦІВ ---
+# Бонус гравця підсилює лише його власне уміння: +2% за рівень (рівень 5 → +10%)
+BONUS_PER_LEVEL = 0.02
+SKILL_BONUS = {'Пас': 'Пл', 'Дриблинг': 'Тх', 'Прием мяча': 'Пр', 'Отбор': 'Пд'}
+
 # --- КОНСТАНТИ СХЕМ ---
 ALL_FORMATIONS = {
     '1-6-3': {'def': 1, 'mid': 6, 'att': 3},
@@ -210,19 +215,6 @@ def solve_cap_puzzle(roster, formation, cap):
         'att': sum(p['real_power'] for p in starters['att'])
     }
 
-def analyze_threats(squad):
-    c, w = 0, 0
-    att_wide = 0
-    for p in squad['att']:
-        if 'CF' in p['pos']: c += 1
-        elif any(x in p['pos'] for x in ['LW', 'RW', 'LF', 'RF']): att_wide += 1
-    w += min(att_wide, 2)
-    mid_wide = 0
-    for p in squad['mid']:
-        if any(x in p['pos'] for x in ['LM', 'RM']): mid_wide += 1
-    w += min(mid_wide, 2)
-    return c, w
-
 # [НОВЕ] Аналіз бонусів
 def analyze_bonuses(squad_dict):
     """Рахує сумарні рівні бонусів по лініях"""
@@ -284,19 +276,22 @@ def analyze_skills(squad_dict, is_home=False):
         return morale_coef(p, is_home)
 
     # [ЗМІНЕНО] Тепер рахуємо суму замість середнього (avg_skill -> sum_skill)
+    # Бонус гравця (SKILL_BONUS) множить лише уміння цього гравця: +BONUS_PER_LEVEL за рівень
     def sum_skill(players, skill_names):
         total = 0
         for p in players:
             coef = get_mor_coef(p)
-            for sn in skill_names: 
-                total += p.get('skills', {}).get(sn, 0) * coef
+            for sn in skill_names:
+                bonus_code = SKILL_BONUS.get(sn)
+                level = p.get('bonuses', {}).get(bonus_code, 0) if bonus_code else 0
+                total += p.get('skills', {}).get(sn, 0) * coef * (1 + BONUS_PER_LEVEL * level)
         return total
 
     # [ЗМІНЕНО] Рахуємо скіли для ВСІЄЇ команди, а не окремих ліній
-    stats['team_pass'] = sum_skill(all_players, ['Пас'])
-    stats['team_reception'] = sum_skill(all_players, ['Прием мяча']) # [ДОДАНО]
-    stats['team_dribble'] = sum_skill(all_players, ['Дриблинг'])
-    stats['team_tackle'] = sum_skill(all_players, ['Отбор', 'Опека']) # 2 скіли захисту
+    stats['team_pass'] = sum_skill(all_players, ['Пас'])                 # з бонусом Пл
+    stats['team_reception'] = sum_skill(all_players, ['Прием мяча'])     # з бонусом Пр
+    stats['team_dribble'] = sum_skill(all_players, ['Дриблинг'])         # з бонусом Тх
+    stats['team_tackle'] = sum_skill(all_players, ['Отбор', 'Опека'])    # Відбір з бонусом Пд, Опіка без бонусу
     
     stats['team_stamina'] = sum_skill(all_players, ['Выносливость']) / len(all_players) if all_players else 0
 
@@ -315,6 +310,11 @@ def analyze_skills(squad_dict, is_home=False):
             endurances.append(endurance)
     stats['fatigue_drop'] = sum(drops) / len(drops) if drops else None
     stats['team_stamina_eff'] = sum(endurances) / len(endurances) if endurances else 0
+
+    # Штрафні: виконавець це гравець з найвищим бонусом Шт серед усіх 11 (воротар теж може бити),
+    # а проти штрафних суперника діє Шт воротаря
+    stats['fk_taker'] = max((p.get('bonuses', {}).get('Шт', 0) for p in all_players), default=0)
+    stats['gk_fk'] = max((p.get('bonuses', {}).get('Шт', 0) for p in squad_dict['gk']), default=0)
 
     if squad_dict['gk']: 
         gk_p = squad_dict['gk'][0]
@@ -348,109 +348,25 @@ def prepare_engine_stats(my_team, opp_stats, is_my_home=False, is_opp_home=False
     my_s = analyze_skills(my_team['squad_dict'], is_home=is_my_home) if 'squad_dict' in my_team else {'team_pass': 0, 'team_reception': 0, 'team_tackle': 0, 'team_dribble': 0, 'expected_shot_power': 0, 'expected_shot_acc': 0, 'team_stamina': 0, 'gk_skill': 0}
 
     def calc_eff(base_stats, bonuses):
-        rec_eff = base_stats['team_reception'] * (1 + (bonuses['interception_total'] * 0.02))
+        # Бонуси Пл, Тх, Пр, Пд вже враховано в умінях кожного гравця (analyze_skills)
+        rec_eff = base_stats['team_reception']
         return {
             'possession': base_stats['team_pass'] + rec_eff,
             'technique': base_stats['team_dribble'] + rec_eff,
-            'tackle_eff': base_stats['team_tackle'] * (1 + (bonuses['tackle_total'] * 0.02)),
+            'tackle_eff': base_stats['team_tackle'],
             # Ат вже враховано в team_stamina_eff (+1 до витривалості за рівень); стара формула
             # лишається лише для статистики без складу
             'stamina_eff': base_stats.get('team_stamina_eff', base_stats['team_stamina'] * (1 + (bonuses['athleticism_total'] * 0.02))),
             'fatigue_drop': base_stats.get('fatigue_drop'),
+            'fk_taker': base_stats.get('fk_taker', 0),
+            'gk_fk': base_stats.get('gk_fk', 0),
             'shot_power': base_stats['expected_shot_power'],
             'shot_acc': base_stats['expected_shot_acc'],
             'gk_skill': base_stats['gk_skill']
         }
     return calc_eff(my_s, my_b), calc_eff(opp_s, opp_b), my_b, opp_b
 
-def get_tactical_advice(my_team, opp_stats, best_meta, is_opp_home):
+def calculate_strength_diff(my_team, opp_stats):
+    """Різниця реальної сили: ваші лінії (захист + півзахист + напад) мінус реальна сила складу суперника"""
     my_tot = my_team['def'] + my_team['mid'] + my_team['att']
-    diff = my_tot - opp_stats['real_total']
-    
-    my_eng, opp_eng, _, opp_b = prepare_engine_stats(my_team, opp_stats, not is_opp_home, is_opp_home)
-
-    cfs = best_meta['c']
-
-    # ---------------------------------------------------------
-    # 1. ТЕКСТОВИЙ АНАЛІЗ СУПЕРНИКА
-    # ---------------------------------------------------------
-    opp_guess_str = "Нормальна"
-    opp_strat_clean = "Нормальна" 
-    guess_details = []
-    
-    # 1. Аутсайдер (Якщо наша перевага > 47, суперник піде в глуху оборону)
-    if diff > 47:
-        guess_details.append("Underdog")
-        opp_guess_str = "Дальні удари (Від оборони)"
-        opp_strat_clean = "Дальні удари"
-
-    # 2. Фланги (Дзеркально до нашого: Нв >= 2 і Гл >= 1)
-    elif opp_b['crossing_wing'] >= 2 and opp_b['heading_att'] >= 1:
-        guess_details.append(f"Нв{opp_b['crossing_wing']}+Гл{opp_b['heading_att']}")
-        opp_guess_str = "Дальні удари (Фланги)"
-        opp_strat_clean = "Дальні удари"
-
-    # 3. Технічна гра (Бонуси Тх АБО Техніка б'є наш Захист)
-    elif opp_b['technique_att'] >= 3 or (opp_eng['technique'] > my_eng['tackle_eff'] * 1.19 and opp_eng['technique'] > 0):
-        if opp_b['technique_att'] >= 3: guess_details.append(f"Тх{opp_b['technique_att']}")
-        else: guess_details.append(f"Дриблінг ({opp_eng['technique']:.0f})")
-        opp_guess_str = "Технічна гра"
-        opp_strat_clean = "Технічна гра"
-
-    # 4. Гра в пас (Бонуси Пл АБО Володіння б'є наш Захист)
-    elif opp_b['playmaker_mid'] >= 4 or (opp_eng['possession'] > my_eng['tackle_eff'] * 1.19 and opp_eng['possession'] > 0): 
-        if opp_b['playmaker_mid'] >= 4: guess_details.append(f"Пл{opp_b['playmaker_mid']}")
-        else: guess_details.append(f"Пас/Прийом ({opp_eng['possession']:.0f})")
-        opp_guess_str = "Гра в пас (Володіння)"
-        opp_strat_clean = "Гра в пас"
-
-    # 5. Слабкий воротар (Якщо їхній Удар пробиває НАШОГО воротаря з запасом 13.7%)
-    elif opp_eng['shot_power'] > my_eng['gk_skill'] * 1.137 and opp_eng['shot_acc'] > my_eng['gk_skill'] * 1.137:
-        guess_details.append("Б'ють по нашому GK")
-        opp_guess_str = "Дальні удари"
-        opp_strat_clean = "Дальні удари"
-
-    # ---------------------------------------------------------
-    # 2. [НОВЕ] ГЕНЕРАЦІЯ ЦИФРОВОГО ПРОФІЛЮ СУПЕРНИКА
-    # ---------------------------------------------------------
-    opp_pass = "Змішані"
-    if opp_strat_clean == "Гра в пас": opp_pass = "Короткі"
-    elif opp_strat_clean == "Дальні удари": opp_pass = "Дальні"
-
-    # Як вони налаштують повзунок Атаки/Захисту?
-    # Якщо diff < 0 (ми слабші), суперник відчуває силу і буде атакувати
-    opp_tactic_val = 47 + (diff * -0.11) 
-    # Якщо суперник вдома, він грає агресивніше
-    opp_tactic_val += 11 if is_opp_home else -11
-    
-    if cfs >= 3: opp_tactic_val = max(opp_tactic_val, 61) # 3 форварди = атака
-    opp_tactic_val = max(11, min(91, opp_tactic_val))
-
-    # Як вони розставлять щільність?
-    opp_dens_in, opp_dens_btwn = 51, 51
-    if opp_strat_clean == "Гра в пас":
-        opp_dens_in, opp_dens_btwn = 71, 71
-    elif opp_strat_clean == "Дальні удари":
-        opp_dens_in, opp_dens_btwn = 51, 31
-    elif opp_strat_clean == "Технічна гра":
-        opp_dens_in, opp_dens_btwn = 31, 51
-
-    opp_press = "НІ"
-    if opp_eng['stamina_eff'] > my_eng['stamina_eff'] * 1.1 or opp_tactic_val > 60:
-        opp_press = "ТАК"
-
-    # ГОТОВИЙ ПРОФІЛЬ ДЛЯ СИМУЛЯТОРА
-    opp_predicted_tactic = {
-        'pass_type': opp_pass,
-        'strat': opp_strat_clean,
-        'press': opp_press,
-        'tactic_val': int(opp_tactic_val),
-        'dens_in': int(opp_dens_in),
-        'dens_btwn': int(opp_dens_btwn)
-    }
-
-    return {
-        'diff': diff,
-        'opp_guess': f"{opp_guess_str} {guess_details}", 
-        'opp_predicted_tactic': opp_predicted_tactic
-    }
+    return my_tot - opp_stats['real_total']

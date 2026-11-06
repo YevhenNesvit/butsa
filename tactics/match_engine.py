@@ -8,6 +8,13 @@ from joblib import Parallel, delayed
 REFINE_TOP_K = 30
 REFINE_ITERS_PER_OPP = 40
 
+# Шанс, що фол перетворюється на небезпечний штрафний: 25% база, ±2 в. п. за рівень
+# бонусу Шт (виконавець команди проти воротаря суперника), у межах 15-35%
+FK_BASE_CHANCE = 0.25
+FK_CHANCE_PER_LEVEL = 0.02
+FK_MIN_CHANCE = 0.15
+FK_MAX_CHANCE = 0.35
+
 # =====================================================================
 # ФУНКЦІЯ-РОБІТНИК ДЛЯ БАГАТОЯДЕРНОСТІ
 # Вона має бути поза класами, щоб Windows міг передати її іншим ядрам процесора
@@ -88,6 +95,17 @@ class ButsaMatchEngine:
         self._my_drop_pct = self.get_match_drop(self.my)
         self._opp_drop_pct = self.get_match_drop(self.opp)
 
+        # Шанс небезпечного штрафного залежить лише від бонусів Шт у складах
+        self._my_fk_chance = self.get_free_kick_chance(self.my, self.opp)
+        self._opp_fk_chance = self.get_free_kick_chance(self.opp, self.my)
+
+    def get_free_kick_chance(self, taker_team, keeper_team):
+        """Шанс небезпечного штрафного з фолу: виконавець (найвищий Шт серед 11 гравців
+        команди, включно з воротарем) проти Шт воротаря суперника, 2 в. п. за рівень."""
+        diff = taker_team.get('fk_taker', 0) - keeper_team.get('gk_fk', 0)
+        chance = FK_BASE_CHANCE + FK_CHANCE_PER_LEVEL * diff
+        return min(FK_MAX_CHANCE, max(FK_MIN_CHANCE, chance))
+
     def get_match_drop(self, stats):
         """Частка падіння фізи за весь матч. Якщо в статистиці є падіння за таблицею вікі
         (fatigue_drop, у відсотках, залежить від витривалості, Ат і віку), беремо його,
@@ -156,8 +174,8 @@ class ButsaMatchEngine:
             elif dens_b > 60: pass_mod = 0.92     # Скупченість (штраф)
         elif t['pass_type'] == 'Змішані':
             if 41 <= dens_b <= 60: pass_mod = 1.1 # Легкий бонус за баланс
-            elif dens_b > 60: pass_mod = 0.92     # [ОНОВЛЕНО] Штраф за скупченість
-            elif dens_b < 41: pass_mod = 0.92
+            elif dens_b > 60: pass_mod = 0.96     # [ОНОВЛЕНО] Штраф за скупченість
+            elif dens_b < 41: pass_mod = 0.96
             
         # 2. СТРАТЕГІЯ (Щільність В лініях) та УДАР
         strat_mod = 1.0
@@ -173,16 +191,16 @@ class ButsaMatchEngine:
             
         elif t['strat'] == 'Дальні удари':
             strat_mod = 0.92                      # Важче пройти захист (б'ємо здалеку)
-            shot_boost = 1.1                     # Але удар небезпечніший
+            shot_boost = 1.28                     # Але удар небезпечніший
             
         elif t['strat'] == 'Нормальна':
-            if 41 <= dens_i <= 60: strat_mod = 1.05  # Легкий бонус за баланс
+            if 41 <= dens_i <= 60: strat_mod = 1.1  # Легкий бонус за баланс
             elif dens_i > 60: strat_mod = 0.96     # [ОНОВЛЕНО] Штраф 4% за скупченість
             elif dens_i < 41: strat_mod = 0.96
             
         return atk_w, def_w, pass_mod, strat_mod, shot_boost
 
-    def simulate_match(self, debug_mode=False):
+    def simulate_match(self):
         my_goals, opp_goals = 0, 0
         total_chances = random.randint(self.min_c, self.max_c)
 
@@ -269,12 +287,6 @@ class ButsaMatchEngine:
             my_stam_drop = max(0.1, 1.0 - my_current_fatigue)
             opp_stam_drop = max(0.1, 1.0 - opp_current_fatigue)
 
-            if debug_mode:
-                print(f"Епізод {minute+1}/{total_chances} | Рахунок {my_goals}:{opp_goals}")
-                print(f"  Моя фіза: {my_stam_drop*100:.1f}% (Пресинг: {self.t_my['press']})")
-                print(f"  Їхня фіза: {opp_stam_drop*100:.1f}% (Пресинг: {self.t_opp['press']})")
-                print("-" * 30)
-
             # 2. ЦЕНТР ПОЛЯ: Володіння
             my_mid = my_poss * m_pass_m * m_strat_m * my_stam_drop * rps_my
             opp_mid = opp_poss * o_pass_m * o_strat_m * opp_stam_drop * rps_opp
@@ -336,8 +348,8 @@ class ButsaMatchEngine:
                 opp_foul_chance = opp_base_foul_chance * 1.19 if opp_is_pressing_now else opp_base_foul_chance
                 
                 if random.random() < opp_foul_chance: 
-                    if random.random() < 0.25: # 25% фолів - небезпечний штрафний
-                        shot = my_shot * m_shot_boost * my_stam_drop * 1.1 
+                    if random.random() < self._my_fk_chance: # небезпечний штрафний (база 25%, залежить від Шт)
+                        shot = my_shot * m_shot_boost * my_stam_drop * 1.1
                         gk = (opp_gk * 0.25) * opp_stam_drop
                         if (shot + gk > 0) and random.random() < (shot / (shot + gk)):
                             my_goals += 1
@@ -350,18 +362,16 @@ class ButsaMatchEngine:
                 # --- СТАНДАРТНА АТАКА ---
                 if self.t_my['strat'] == 'Технічна гра': atk_stat = my_tech
                 elif self.t_my['strat'] == 'Гра в пас': atk_stat = my_poss
-                else: atk_stat = (my_tech + my_poss) * 0.56
+                else: atk_stat = (my_tech + my_poss) * 0.5
                 
                 atk_pow = atk_stat * m_atk_w * m_strat_m * my_stam_drop * rps_my
                 def_pow = opp_tack * o_def_w * opp_stam_drop * foul_def_penalty 
 
-                if self.t_my['strat'] == 'Дальні удари': def_pow *= 0.92
                 if self.t_my['press'] == 'ТАК': atk_pow *= my_press_bonus
                 
                 if (atk_pow + def_pow > 0) and random.random() < (atk_pow / (atk_pow + def_pow)):
                     shot = my_shot * m_shot_boost * my_stam_drop
                     gk = (opp_gk * 0.25) * opp_stam_drop
-                    if self.t_my['strat'] == 'Дальні удари': gk *= 1.1 
                     
                     if (shot + gk > 0) and random.random() < (shot / (shot + gk)):
                         my_goals += 1
@@ -371,8 +381,8 @@ class ButsaMatchEngine:
                 my_foul_chance = my_base_foul_chance * 1.19 if my_is_pressing_now else my_base_foul_chance
                 
                 if random.random() < my_foul_chance: 
-                    if random.random() < 0.25:
-                        shot = opp_shot * o_shot_boost * opp_stam_drop * 1.1 
+                    if random.random() < self._opp_fk_chance:
+                        shot = opp_shot * o_shot_boost * opp_stam_drop * 1.1
                         gk = (my_gk * 0.25) * my_stam_drop
                         if (shot + gk > 0) and random.random() < (shot / (shot + gk)):
                             opp_goals += 1
@@ -385,18 +395,16 @@ class ButsaMatchEngine:
                 # --- СТАНДАРТНА АТАКА ---
                 if self.t_opp['strat'] == 'Технічна гра': atk_stat = opp_tech
                 elif self.t_opp['strat'] == 'Гра в пас': atk_stat = opp_poss
-                else: atk_stat = (opp_tech + opp_poss) * 0.56
+                else: atk_stat = (opp_tech + opp_poss) * 0.5
                 
                 atk_pow = atk_stat * o_atk_w * o_strat_m * opp_stam_drop * rps_opp
                 def_pow = my_tack * m_def_w * my_stam_drop * foul_def_penalty
 
-                if self.t_opp['strat'] == 'Дальні удари': def_pow *= 0.92
                 if self.t_opp['press'] == 'ТАК': atk_pow *= opp_press_bonus
                 
                 if (atk_pow + def_pow > 0) and random.random() < (atk_pow / (atk_pow + def_pow)):
                     shot = opp_shot * o_shot_boost * opp_stam_drop
                     gk = (my_gk * 0.25) * my_stam_drop
-                    if self.t_opp['strat'] == 'Дальні удари': gk *= 1.1
                     
                     if (shot + gk > 0) and random.random() < (shot / (shot + gk)):
                         opp_goals += 1
