@@ -208,9 +208,8 @@ if st.session_state.opp_roster and my_team_stats:
     for fname, fstruct in formations_to_analyze.items():
         res = lg.solve_cap_puzzle(raw_roster, fstruct, cap_input)
         if len(res['squad_list']) < 11: continue
-        c, w = lg.analyze_threats(res['squad_dict'])
         total_mins = sum(p['minutes'] for p in res['squad_list'])
-        results.append({'name': fname, 'res': res, 'c': c, 'w': w, 'total_mins': total_mins})
+        results.append({'name': fname, 'res': res, 'total_mins': total_mins})
 
     if not results:
         st.error("Не вдалося скласти склад суперника.")
@@ -219,14 +218,7 @@ if st.session_state.opp_roster and my_team_stats:
         best = results[0]
         opp_stats = best['res']
 
-        # Отримуємо Diff та тишком генеруємо ймовірну тактику (тільки для консольного демо-матчу)
-        advice = lg.get_tactical_advice(
-            my_team_stats, 
-            opp_stats, 
-            {'c': best['c'], 'w': best['w']}, 
-            opponent_home
-        )
-        opp_predicted = advice['opp_predicted_tactic'] # Зберігаємо для терміналу
+        diff = lg.calculate_strength_diff(my_team_stats, opp_stats)
 
         # Єдиний чистий блок інформації про суперника (без колонок)
         st.subheader(f"Прогноз: {best['name']}")
@@ -236,7 +228,7 @@ if st.session_state.opp_roster and my_team_stats:
         s = opp_stats['squad_dict']
         st.write(f"**Nominal (Cap):** {opp_stats['nominal']:.1f} / {cap_input}")
         st.write(f"**Real Power:** {opp_stats['real_total']:.1f}")
-        st.markdown(f"**Різниця в силі (Diff):** :violet[{advice['diff']:.1f}]") # Перенесли сюди і виділили кольором!
+        st.markdown(f"**Різниця в силі (Diff):** :violet[{diff:.1f}]") # Перенесли сюди і виділили кольором!
         st.write("---")
         
         st.write(f"**DEF ({opp_stats['def']:.1f}):** {', '.join([p['name'] for p in s['def']])}")
@@ -288,8 +280,6 @@ if st.session_state.opp_roster and my_team_stats:
                     st.error(f"🚨 КРИТИЧНА ПОМИЛКА: Скіли гравців = 0! Парсер не зміг зайти в профілі.")
                     st.stop()
                 
-                opp_predicted = advice['opp_predicted_tactic']
-
                 if "коммерч" in tourn_input.lower():
                     tourn_coef = 0.5
                 else:
@@ -325,22 +315,3 @@ if st.session_state.opp_roster and my_team_stats:
                         st.write(f"**Між лініями:** {c['dens_btwn']}")
                         st.write(f"**Тактика:** {c['tactic_val']}")
                         st.caption(f"Середні забиті голи: {res['avg_goals']:.2f}")
-
-                best_tactic = top_tactics[0]['combo'] # Беремо знайдену ТОП-1 тактику
-                
-                print("\n" + "="*50)
-                print("🏆 ПОКАЗОВИЙ МАТЧ ТОП-1 ТАКТИКИ ПРОТИ СУПЕРНИКА 🏆")
-                print("="*50)
-                
-                # Створюємо стадіон на 1 матч
-                demo_engine = me.ButsaMatchEngine(
-                    my_eng, opp_eng, 
-                    best_tactic, opp_predicted, 
-                    min_chances, max_chances, tourn_coef,
-                    my_fouls_avg=my_fouls_input,    # <--- [НОВЕ]
-                    opp_fouls_avg=opp_fouls_input   # <--- [НОВЕ]
-                )
-                
-                # Запускаємо з принтом у консоль!
-                demo_engine.simulate_match(debug_mode=True)
-                print("="*50 + "\n")
