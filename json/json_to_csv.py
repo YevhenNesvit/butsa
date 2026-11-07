@@ -52,7 +52,6 @@ for file in files:
             flat_player["team_name"] = team_name
             flat_player["team_divisionid"] = team_divisionid
             flat_player["team_divisiontype"] = team_divisiontype
-            flat_player["team_division_name"] = division_name
 
             all_players.append(flat_player)
 
@@ -74,6 +73,73 @@ df.loc[mask, "transfer"] = 2
 
 print("Унікальних ID:", trans_df["id"].nunique())
 print(df['transfer'].value_counts(dropna=False))
+
+# --- перейменування колонок під схему таблиці players у БД ---
+RENAME_MAP = {
+    "id": "playerid",
+    "club_country_id": "countryid",
+    "club_country_name": "countryname",
+    "team_id": "teamid",
+    "team_name": "teamname",
+    "team_divisionid": "divisionid",
+    "team_divisiontype": "divisiontype",
+    "number": "number",
+    "name": "name",
+    "country_id": "nationalityid",
+    "country_name": "nationalityname",
+    "primaryPosition": "primaryposition",
+    "secondaryPosition": "secondaryposition",
+    "aspectName": "aspectname",
+    "age": "age",
+    "stamina": "stamina",
+    "tired": "tired",
+    "morale": "morale",
+    "power": "power",
+    "bonuses_str": "bonusesstr",
+    "bonusPoints": "bonuspoints",
+    "nextBonusPoints": "nextbonuspoints",
+    "talent": "talent",
+    "rTalent": "rtalent",
+    "expLevel": "explevel",
+    "expPoints": "exppoints",
+    "salary": "salary",
+    "cost": "cost",
+    "injury": "injury",
+    "transfer": "transfer",
+    "loan": "loan",
+    "skl": "skl",
+    "tckl": "tckl",
+    "mrk": "mrk",
+    "drbl": "drbl",
+    "brcv": "brcv",
+    "edrnc": "edrnc",
+    "pass": "pass",
+    "shotPwr": "shotpwr",
+    "shotAcc": "shotacc",
+    # team_division_name не має відповідної колонки в таблиці БД —
+    # лишаємо як є, додамо останньою колонкою нижче
+}
+
+df = df.rename(columns=RENAME_MAP)
+
+# порядок колонок як у CREATE TABLE players (+ team_division_name в кінці,
+# бо такої колонки в таблиці БД немає)
+COLUMN_ORDER = [
+    "playerid", "countryid", "countryname",
+    "teamid", "teamname", "divisionid", "divisiontype",
+    "number", "name",
+    "nationalityid", "nationalityname",
+    "primaryposition", "secondaryposition", "aspectname", "age",
+    "stamina", "tired", "morale", "power",
+    "bonusesstr", "bonuspoints", "nextbonuspoints",
+    "talent", "rtalent", "explevel", "exppoints",
+    "salary", "cost", "injury", "transfer", "loan",
+    "skl", "tckl", "mrk", "drbl", "brcv", "edrnc",
+    "pass", "shotpwr", "shotacc",
+    "team_division_name",
+]
+
+df = df[[c for c in COLUMN_ORDER if c in df.columns]]
 
 # Зберігаємо в CSV
 df.to_csv("json/responses/all_players.csv", index=False, encoding='utf-8')
