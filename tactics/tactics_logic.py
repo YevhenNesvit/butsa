@@ -1,4 +1,6 @@
+import bisect
 import csv
+import itertools
 import os
 
 # --- БОНУСИ ГРАВЦІВ ---
@@ -370,3 +372,151 @@ def calculate_strength_diff(my_team, opp_stats):
     """Різниця реальної сили: ваші лінії (захист + півзахист + напад) мінус реальна сила складу суперника"""
     my_tot = my_team['def'] + my_team['mid'] + my_team['att']
     return my_tot - opp_stats['real_total']
+
+
+# ==============================================================================
+# ПІДБІР СКЛАДУ ПІД ЛІМІТ З ОБОВ'ЯЗКОВИМИ ГРАВЦЯМИ (для вашої команди)
+# Ліміт це чиста сума номіналу (мастерства), тому ціль: набрати склад якомога
+# ближче до ліміту, не перевищуючи його. За рівної суми кращий той, що має більше Real.
+# ==============================================================================
+
+def _line_options(player):
+    """Лінії, де гравець може стояти за своїми позиціями"""
+    return [line for line in ('gk', 'def', 'mid', 'att')
+            if any(pos in player['pos'] for pos in get_valid_pos_list(line))]
+
+def solve_my_lineup(roster, formation, cap, forced_names=(), excluded_names=()):
+    """Точний підбір складу: усі forced_names обов'язково у складі, решта добирається так, щоб
+    сума номіналу була найбільшою, але не більшою за cap. Повертає словник як solve_cap_puzzle
+    або None, якщо такого складу не існує."""
+    lines = ('gk', 'def', 'mid', 'att')
+    need = {'gk': 1, 'def': formation['def'], 'mid': formation['mid'], 'att': formation['att']}
+    pool = [p for p in roster if not p.get('is_injured', False) and p['name'] not in excluded_names]
+    forced = [p for p in pool if p['name'] in forced_names]
+    if len(forced) < len(set(forced_names)):
+        return None  # хтось із обов'язкових недоступний (травма, виключений)
+    forced_options = [_line_options(p) for p in forced]
+    if any(not o for o in forced_options):
+        return None  # позиція обов'язкового гравця не підходить жодній лінії
+    forced_set = {p['name'] for p in forced}
+    free = [p for p in pool if p['name'] not in forced_set]
+    options = {p['name']: _line_options(p) for p in pool}
+
+    def combos_of(cands, count):
+        """Усі способи узяти count гравців: (номінал, реал, гравці, імена)"""
+        return [(round(sum(p['nominal_power'] for p in c), 2), sum(p['real_power'] for p in c), list(c), frozenset(p['name'] for p in c))
+                for c in itertools.combinations(cands, count)]
+
+    best = None  # (номінал, реал, обов'язкові по лініях, gk, def, mid, att)
+    # Обов'язковий гравець з кількома позиціями може стояти в різних лініях: перебираємо розміщення
+    for assign in itertools.product(*forced_options):
+        fixed = {l: [] for l in lines}
+        for p, l in zip(forced, assign):
+            fixed[l].append(p)
+        if any(len(fixed[l]) > need[l] for l in lines):
+            continue
+        fixed_nom = round(sum(p['nominal_power'] for l in lines for p in fixed[l]), 2)
+        if fixed_nom > cap + 1e-9:
+            continue
+        fixed_real = sum(p['real_power'] for l in lines for p in fixed[l])
+        rem = {l: need[l] - len(fixed[l]) for l in lines}
+        cands = {l: [p for p in free if l in options[p['name']]] for l in lines}
+        if any(len(cands[l]) < rem[l] for l in lines):
+            continue
+        combos = {l: combos_of(cands[l], rem[l]) for l in lines}
+
+        # Зустріч посередині: (воротар + захист) проти (півзахист + напад), без спільних гравців
+        left = [(gn + dn, gr + dr, gc, dc, gnames | dnames)
+                for gn, gr, gc, gnames in combos['gk'] for dn, dr, dc, dnames in combos['def'] if not (gnames & dnames)]
+        right = [(mn + an, mr + ar, mc, ac, mnames | anames)
+                 for mn, mr, mc, mnames in combos['mid'] for an, ar, ac, anames in combos['att'] if not (mnames & anames)]
+        if not left or not right:
+            continue
+        right.sort(key=lambda x: x[0])
+        right_noms = [x[0] for x in right]
+        for l_nom, l_real, l_gk, l_def, l_names in left:
+            limit = round(cap - fixed_nom - l_nom, 2)
+            j = bisect.bisect_right(right_noms, limit + 1e-9) - 1
+            found_nom = None
+            while j >= 0:
+                r_nom, r_real, r_mid, r_att, r_names = right[j]
+                if found_nom is not None and r_nom < found_nom - 1e-9:
+                    break  # нижче вже гірші за номіналом (за рівного номіналу перебираємо за Real)
+                if not (l_names & r_names):
+                    total = round(fixed_nom + l_nom + r_nom, 2)
+                    real = fixed_real + l_real + r_real
+                    if best is None or (total, real) > (best[0], best[1]):
+                        best = (total, real, fixed, l_gk, l_def, r_mid, r_att)
+                    found_nom = r_nom
+                j -= 1
+    if best is None:
+        return None
+
+    total, real, fixed, gk_extra, def_extra, mid_extra, att_extra = best
+    squad = {
+        'gk': fixed['gk'] + gk_extra,
+        'def': fixed['def'] + def_extra,
+        'mid': fixed['mid'] + mid_extra,
+        'att': fixed['att'] + att_extra,
+    }
+    flat = squad['gk'] + squad['def'] + squad['mid'] + squad['att']
+    return {
+        'nominal': total,
+        'real_total': sum(p['real_power'] for p in flat),
+        'squad_dict': squad,
+        'squad_list': flat,
+        'def': sum(p['real_power'] for p in squad['def']),
+        'mid': sum(p['real_power'] for p in squad['mid']),
+        'att': sum(p['real_power'] for p in squad['att'])
+    }
+
+
+def _best_over_formations(roster, formations, cap, forced, excluded):
+    """Найкращий склад серед схем: більший номіналом (ближче до ліміту), далі більший Real"""
+    best = None
+    for fname, fstruct in formations:
+        res = solve_my_lineup(roster, fstruct, cap, forced, excluded)
+        if res and (best is None or (res['nominal'], res['real_total']) > (best[1]['nominal'], best[1]['real_total'])):
+            best = (fname, res)
+    return best
+
+def explain_forced_failure(roster, forced_names, cap, excluded_names=()):
+    """Чому обов'язкових гравців не вдалося вмістити в склад"""
+    by_name = {p['name']: p for p in roster}
+    unavailable = [n for n in forced_names if n not in by_name or by_name[n].get('is_injured') or n in excluded_names]
+    if unavailable:
+        return "Недоступні (травма або виключені): " + ", ".join(unavailable) + "."
+    total = round(sum(by_name[n]['nominal_power'] for n in forced_names), 2)
+    if total > cap + 1e-9:
+        return f"Сума номіналу обов'язкових гравців {total:.2f} перевищує ліміт {cap}."
+    return ("Обов'язкові гравці разом не вміщуються в жодну схему під ліміт: або склад із ними перевищує ліміт, "
+            "або їхні позиції не лягають у схему чи не вистачає гравців на лінії.")
+
+def propose_my_lineup(roster, formation_name, cap, forced_names=(), excluded_names=(), max_variants=60):
+    """Склад вашої команди під ліміт з обов'язковими гравцями. formation_name це схема з ALL_FORMATIONS
+    або будь-що інше для автоматичного вибору найкращої. Якщо вмістити всіх обов'язкових неможливо
+    (перевищують ліміт, не лягають у схему), пропонує власний склад із найбільшою кількістю
+    обов'язкових і розповідає, кого довелося прибрати і чому."""
+    formations = ([(formation_name, ALL_FORMATIONS[formation_name])] if formation_name in ALL_FORMATIONS
+                  else list(ALL_FORMATIONS.items()))
+    forced = list(forced_names)
+    full = _best_over_formations(roster, formations, cap, forced, excluded_names)
+    if full:
+        return {'formation': full[0], 'result': full[1], 'dropped': [], 'reason': ''}
+
+    reason = explain_forced_failure(roster, forced, cap, excluded_names)
+    by_name = {p['name']: p for p in roster}
+    nominal = lambda names: sum(by_name[n]['nominal_power'] for n in names if n in by_name)
+    for k in range(len(forced) - 1, -1, -1):
+        # Дешеве відсіювання: сума номіналу обов'язкових не має перевищувати ліміт
+        subsets = [s for s in itertools.combinations(forced, k) if nominal(s) <= cap + 1e-9]
+        subsets.sort(key=nominal)
+        best = None
+        for subset in subsets[:max_variants]:
+            cand = _best_over_formations(roster, formations, cap, list(subset), excluded_names)
+            if cand and (best is None or (cand[1]['nominal'], cand[1]['real_total']) > (best[1]['nominal'], best[1]['real_total'])):
+                best = (cand[0], cand[1], subset)
+        if best:
+            return {'formation': best[0], 'result': best[1], 'dropped': [n for n in forced if n not in best[2]], 'reason': reason}
+    return {'formation': None, 'result': None, 'dropped': forced,
+            'reason': reason + " Склад скласти неможливо: перевірте ліміт і кількість гравців на лініях."}
