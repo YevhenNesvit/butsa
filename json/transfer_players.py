@@ -77,15 +77,17 @@ def scrape_players(session, save_every=1):
                 empty_page_streak += 1
                 repeat_page_streak += 1
             else:
-                new_players = [p for p in page_players if p["id"] not in seen_ids]
+                new_players = []
+                for p in page_players:
+                    if p["id"] not in seen_ids:
+                        seen_ids.add(p["id"])
+                        new_players.append(p)
 
                 if not new_players:
                     repeat_page_streak += 1
                     empty_page_streak = 0
                 else:
-                    for p in new_players:
-                        all_players.append(p)
-                        seen_ids.add(p["id"])
+                    all_players.extend(new_players)
 
                     empty_page_streak = 0
                     repeat_page_streak = 0

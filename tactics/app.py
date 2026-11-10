@@ -71,247 +71,344 @@ with st.sidebar:
 # ОСНОВНИЙ ЕКРАН
 # ==============================================================================
 
-col_me, col_opp = st.columns([1, 1])
+tab_analysis, tab_lineup = st.tabs(["🧠 Аналіз і симуляція", "🧩 Підбір складу"])
 
-# --- МОЯ КОМАНДА ---
-with col_me:
-    header_text = f"🟢 Моя Команда: {st.session_state.my_team_name}" if st.session_state.my_team_name else "🟢 Моя Команда"
-    st.header(header_text)
 
-    if 'flash_msg_me' in st.session_state:
-        st.success(st.session_state.flash_msg_me)
-        del st.session_state.flash_msg_me
+def apply_auto_lineup():
+    """Переносить підібраний склад у конструктор (виконується як callback до перезапуску скрипта)"""
+    proposal = st.session_state.get('auto_lineup')
+    if not proposal or not proposal.get('result'):
+        return
+    squad = proposal['result']['squad_dict']
+    st.session_state['w_gk'] = squad['gk'][0]
+    st.session_state['w_defs'] = list(squad['def'])
+    st.session_state['w_mids'] = list(squad['mid'])
+    st.session_state['w_atts'] = list(squad['att'])
+    st.session_state['auto_applied'] = True
 
-    my_roster_url = st.text_input("URL мого ростера", value=config.get("my_roster_url", ""), key="my_url_input")
+
+with tab_analysis:
+    col_me, col_opp = st.columns([1, 1])
+
+    # --- МОЯ КОМАНДА ---
+    with col_me:
+        header_text = f"🟢 Моя Команда: {st.session_state.my_team_name}" if st.session_state.my_team_name else "🟢 Моя Команда"
+        st.header(header_text)
+
+        if 'flash_msg_me' in st.session_state:
+            st.success(st.session_state.flash_msg_me)
+            del st.session_state.flash_msg_me
+
+        my_roster_url = st.text_input("URL мого ростера", value=config.get("my_roster_url", ""), key="my_url_input")
     
-    if st.button("📥 Завантажити мій склад"):
-        if not cookie_input:
-            st.error("Потрібен Cookie!")
+        if st.button("📥 Завантажити мій склад"):
+            if not cookie_input:
+                st.error("Потрібен Cookie!")
+            else:
+                with st.spinner("Завантаження..."):
+                    team_name, roster = scrape_roster(my_roster_url, cookie_input, tourn_input)
+                    if roster:
+                        st.session_state.my_team_name = team_name
+                        for p in roster:
+                            p['nominal_power'] = lg.calculate_nominal_power(p, i_am_home)
+                            p['real_power'] = lg.calculate_real_power(p, i_am_home)
+                        st.session_state.my_roster = roster
+                        # Старі вибори прив'язані до попереднього ростера, тож їх скидаємо
+                        for stale_key in ('w_gk', 'w_defs', 'w_mids', 'w_atts', 'auto_lineup', 'auto_must', 'auto_banned'):
+                            st.session_state.pop(stale_key, None)
+                        st.session_state.flash_msg_me = f"Завантажено {len(roster)} гравців!"
+                        st.rerun()
+                    else:
+                        st.error("Помилка завантаження.")
+
+        if st.session_state.my_roster:
+            st.divider()
+            st.subheader("🛠️ Конструктор")
+        
+            # Функція форматування: показуємо і Номінал, і Реал
+            def format_func(player):
+                tag = " 🚑ТРАВМА" if player.get('is_injured') else ""
+                return f"{player['name']}{tag} [{player['pos'][0]} | Nom:{player['nominal_power']:.2f} Real:{player['real_power']:.1f}]"
+
+            all_players = st.session_state.my_roster
+
+            # Гравець з кількома позиціями зникає з наступних списків, щойно його
+            # вибрано в попередній лінії (порядок: GK -> DEF -> MID -> ATT)
+            gks = [p for p in all_players if 'GK' in p['pos']]
+            sel_gk = st.selectbox("Воротар (GK)", gks, format_func=format_func, key="w_gk")
+            taken_names = {sel_gk['name']} if sel_gk else set()
+
+            defs = [p for p in all_players if any(x in p['pos'] for x in lg.get_valid_pos_list('def')) and p['name'] not in taken_names]
+            sel_defs = st.multiselect("Захист (DEF)", defs, format_func=format_func, key="w_defs")
+            taken_names |= {p['name'] for p in sel_defs}
+
+            mids = [p for p in all_players if any(x in p['pos'] for x in lg.get_valid_pos_list('mid')) and p['name'] not in taken_names]
+            sel_mids = st.multiselect("Півзахист (MID)", mids, format_func=format_func, key="w_mids")
+            taken_names |= {p['name'] for p in sel_mids}
+
+            atts = [p for p in all_players if any(x in p['pos'] for x in lg.get_valid_pos_list('att')) and p['name'] not in taken_names]
+            sel_atts = st.multiselect("Напад (ATT)", atts, format_func=format_func, key="w_atts")
+
+            # Рахуємо Номінал (для ліміту) і Реал (для тактики)
+            my_nom_total = (sum(p['nominal_power'] for p in sel_defs + sel_mids + sel_atts) + (sel_gk['nominal_power'] if sel_gk else 0))
+        
+            my_gk_pow = sel_gk['real_power'] if sel_gk else 0
+            my_def_pow = lg.calculate_line_power(sel_defs) + my_gk_pow
+            my_mid_pow = lg.calculate_line_power(sel_mids)
+            my_att_pow = lg.calculate_line_power(sel_atts)
+        
+            count_players = 1 + len(sel_defs) + len(sel_mids) + len(sel_atts)
+
+            my_squad_dict = {
+                'gk': [sel_gk] if sel_gk else [],
+                'def': sel_defs,
+                'mid': sel_mids,
+                'att': sel_atts
+            }
+
+            st.info(f"""
+            **Гравців:** {count_players}/11
+        
+            📊 **NOMINAL (Cap):** {my_nom_total:.2f} / {cap_input}
+            💪 **REAL POWER:** {(my_def_pow + my_mid_pow + my_att_pow):.1f}
+        
+            🛡️ **DEF:** {my_def_pow:.1f}  
+            ⚙️ **MID:** {my_mid_pow:.1f}  
+            ⚔️ **ATT:** {my_att_pow:.1f}
+            """)
+        
+            my_team_stats = {'def': my_def_pow, 'mid': my_mid_pow, 'att': my_att_pow, 'stamina': 100, 'squad_dict': my_squad_dict}
         else:
-            with st.spinner("Завантаження..."):
-                team_name, roster = scrape_roster(my_roster_url, cookie_input, tourn_input)
-                if roster:
-                    st.session_state.my_team_name = team_name
-                    for p in roster:
-                        p['nominal_power'] = lg.calculate_nominal_power(p, i_am_home)
-                        p['real_power'] = lg.calculate_real_power(p, i_am_home)
-                    st.session_state.my_roster = roster
-                    st.session_state.flash_msg_me = f"Завантажено {len(roster)} гравців!"
-                    st.rerun()
-                else:
-                    st.error("Помилка завантаження.")
-
-    if st.session_state.my_roster:
-        st.divider()
-        st.subheader("🛠️ Конструктор")
-        
-        # Функція форматування: показуємо і Номінал, і Реал
-        def format_func(player):
-            tag = " 🚑ТРАВМА" if player.get('is_injured') else ""
-            return f"{player['name']}{tag} [{player['pos'][0]} | Nom:{player['nominal_power']:.1f} Real:{player['real_power']:.1f}]"
-
-        all_players = st.session_state.my_roster
-
-        # Гравець з кількома позиціями зникає з наступних списків, щойно його
-        # вибрано в попередній лінії (порядок: GK -> DEF -> MID -> ATT)
-        gks = [p for p in all_players if 'GK' in p['pos']]
-        sel_gk = st.selectbox("Воротар (GK)", gks, format_func=format_func)
-        taken_names = {sel_gk['name']} if sel_gk else set()
-
-        defs = [p for p in all_players if any(x in p['pos'] for x in lg.get_valid_pos_list('def')) and p['name'] not in taken_names]
-        sel_defs = st.multiselect("Захист (DEF)", defs, format_func=format_func)
-        taken_names |= {p['name'] for p in sel_defs}
-
-        mids = [p for p in all_players if any(x in p['pos'] for x in lg.get_valid_pos_list('mid')) and p['name'] not in taken_names]
-        sel_mids = st.multiselect("Півзахист (MID)", mids, format_func=format_func)
-        taken_names |= {p['name'] for p in sel_mids}
-
-        atts = [p for p in all_players if any(x in p['pos'] for x in lg.get_valid_pos_list('att')) and p['name'] not in taken_names]
-        sel_atts = st.multiselect("Напад (ATT)", atts, format_func=format_func)
-
-        # Рахуємо Номінал (для ліміту) і Реал (для тактики)
-        my_nom_total = (sum(p['nominal_power'] for p in sel_defs + sel_mids + sel_atts) + (sel_gk['nominal_power'] if sel_gk else 0))
-        
-        my_gk_pow = sel_gk['real_power'] if sel_gk else 0
-        my_def_pow = lg.calculate_line_power(sel_defs) + my_gk_pow
-        my_mid_pow = lg.calculate_line_power(sel_mids)
-        my_att_pow = lg.calculate_line_power(sel_atts)
-        
-        count_players = 1 + len(sel_defs) + len(sel_mids) + len(sel_atts)
-
-        my_squad_dict = {
-            'gk': [sel_gk] if sel_gk else [],
-            'def': sel_defs,
-            'mid': sel_mids,
-            'att': sel_atts
-        }
-
-        st.info(f"""
-        **Гравців:** {count_players}/11
-        
-        📊 **NOMINAL (Cap):** {my_nom_total:.1f} / {cap_input}
-        💪 **REAL POWER:** {(my_def_pow + my_mid_pow + my_att_pow):.1f}
-        
-        🛡️ **DEF:** {my_def_pow:.1f}  
-        ⚙️ **MID:** {my_mid_pow:.1f}  
-        ⚔️ **ATT:** {my_att_pow:.1f}
-        """)
-        
-        my_team_stats = {'def': my_def_pow, 'mid': my_mid_pow, 'att': my_att_pow, 'stamina': 100, 'squad_dict': my_squad_dict}
-    else:
-        st.warning("Спочатку завантажте свою команду.")
-        my_team_stats = None
+            st.warning("Спочатку завантажте свою команду.")
+            my_team_stats = None
 
 
-# --- СУПЕРНИК ---
-with col_opp:
-    header_text_opp = f"🔴 Суперник: {st.session_state.opp_team_name}" if st.session_state.opp_team_name else "🔴 Суперник"
-    st.header(header_text_opp)
+    # --- СУПЕРНИК ---
+    with col_opp:
+        header_text_opp = f"🔴 Суперник: {st.session_state.opp_team_name}" if st.session_state.opp_team_name else "🔴 Суперник"
+        st.header(header_text_opp)
 
-    if 'flash_msg' in st.session_state:
-        st.success(st.session_state.flash_msg)
-        del st.session_state.flash_msg
+        if 'flash_msg' in st.session_state:
+            st.success(st.session_state.flash_msg)
+            del st.session_state.flash_msg
 
-    opp_roster_url = st.text_input("URL ростера суперника")
+        opp_roster_url = st.text_input("URL ростера суперника")
     
-    if st.button("🕵️ Аналізувати Суперника", type="primary"):
-        if not opp_roster_url or not cookie_input:
-            st.error("Потрібен URL та Cookie!")
+        if st.button("🕵️ Аналізувати Суперника", type="primary"):
+            if not opp_roster_url or not cookie_input:
+                st.error("Потрібен URL та Cookie!")
+            else:
+                with st.spinner("Шпигуємо..."):
+                    team_name, raw_roster = scrape_roster(opp_roster_url, cookie_input, tourn_input)
+                    if raw_roster:
+                        # Попередній розрахунок Nom/Real для суперника
+                        st.session_state.opp_team_name = team_name
+                        for p in raw_roster:
+                            p['nominal_power'] = lg.calculate_nominal_power(p, opponent_home)
+                            p['real_power'] = lg.calculate_real_power(p, opponent_home)
+                        st.session_state.opp_roster = raw_roster
+                        st.session_state.flash_msg = f"Завантажено {len(raw_roster)} гравців!"
+                        st.rerun()
+                    else:
+                        st.error("Помилка збору даних.")
+
+    # ==============================================================================
+    # АНАЛІЗ
+    # ==============================================================================
+
+    if st.session_state.opp_roster and my_team_stats:
+        st.divider()
+        st.header("🧠 Тактичний Аналіз")
+    
+        raw_roster = st.session_state.opp_roster
+        formations_to_analyze = (lg.ALL_FORMATIONS if selected_formation_name == "Авто (Підібрати найкращу)" 
+                                 else {selected_formation_name: lg.ALL_FORMATIONS[selected_formation_name]})
+
+        results = []
+        for fname, fstruct in formations_to_analyze.items():
+            res = lg.solve_cap_puzzle(raw_roster, fstruct, cap_input)
+            if len(res['squad_list']) < 11: continue
+            total_mins = sum(p['minutes'] for p in res['squad_list'])
+            results.append({'name': fname, 'res': res, 'total_mins': total_mins})
+
+        if not results:
+            st.error("Не вдалося скласти склад суперника.")
         else:
-            with st.spinner("Шпигуємо..."):
-                team_name, raw_roster = scrape_roster(opp_roster_url, cookie_input, tourn_input)
-                if raw_roster:
-                    # Попередній розрахунок Nom/Real для суперника
-                    st.session_state.opp_team_name = team_name
-                    for p in raw_roster:
-                        p['nominal_power'] = lg.calculate_nominal_power(p, opponent_home)
-                        p['real_power'] = lg.calculate_real_power(p, opponent_home)
-                    st.session_state.opp_roster = raw_roster
-                    st.session_state.flash_msg = f"Завантажено {len(raw_roster)} гравців!"
-                    st.rerun()
-                else:
-                    st.error("Помилка збору даних.")
+            results.sort(key=lambda x: (x['total_mins'], x['res']['real_total']), reverse=True)
+            best = results[0]
+            opp_stats = best['res']
 
-# ==============================================================================
-# АНАЛІЗ
-# ==============================================================================
+            diff = lg.calculate_strength_diff(my_team_stats, opp_stats)
 
-if st.session_state.opp_roster and my_team_stats:
-    st.divider()
-    st.header("🧠 Тактичний Аналіз")
-    
-    raw_roster = st.session_state.opp_roster
-    formations_to_analyze = (lg.ALL_FORMATIONS if selected_formation_name == "Авто (Підібрати найкращу)" 
-                             else {selected_formation_name: lg.ALL_FORMATIONS[selected_formation_name]})
-
-    results = []
-    for fname, fstruct in formations_to_analyze.items():
-        res = lg.solve_cap_puzzle(raw_roster, fstruct, cap_input)
-        if len(res['squad_list']) < 11: continue
-        total_mins = sum(p['minutes'] for p in res['squad_list'])
-        results.append({'name': fname, 'res': res, 'total_mins': total_mins})
-
-    if not results:
-        st.error("Не вдалося скласти склад суперника.")
-    else:
-        results.sort(key=lambda x: (x['total_mins'], x['res']['real_total']), reverse=True)
-        best = results[0]
-        opp_stats = best['res']
-
-        diff = lg.calculate_strength_diff(my_team_stats, opp_stats)
-
-        # Єдиний чистий блок інформації про суперника (без колонок)
-        st.subheader(f"Прогноз: {best['name']}")
-        if selected_formation_name != "Авто (Підібрати найкращу)": 
-            st.caption("(Схема зафіксована)")
+            # Єдиний чистий блок інформації про суперника (без колонок)
+            st.subheader(f"Прогноз: {best['name']}")
+            if selected_formation_name != "Авто (Підібрати найкращу)": 
+                st.caption("(Схема зафіксована)")
         
-        s = opp_stats['squad_dict']
-        st.write(f"**Nominal (Cap):** {opp_stats['nominal']:.1f} / {cap_input}")
-        st.write(f"**Real Power:** {opp_stats['real_total']:.1f}")
-        st.markdown(f"**Різниця в силі (Diff):** :violet[{diff:.1f}]") # Перенесли сюди і виділили кольором!
-        st.write("---")
+            s = opp_stats['squad_dict']
+            st.write(f"**Nominal (Cap):** {opp_stats['nominal']:.2f} / {cap_input}")
+            st.write(f"**Real Power:** {opp_stats['real_total']:.1f}")
+            st.markdown(f"**Різниця в силі (Diff):** :violet[{diff:.1f}]") # Перенесли сюди і виділили кольором!
+            st.write("---")
         
-        st.write(f"**DEF ({opp_stats['def']:.1f}):** {', '.join([p['name'] for p in s['def']])}")
-        st.write(f"**MID ({opp_stats['mid']:.1f}):** {', '.join([p['name'] for p in s['mid']])}")
-        st.write(f"**ATT ({opp_stats['att']:.1f}):** {', '.join([p['name'] for p in s['att']])}")
-        if s['gk']: 
-            st.caption(f"GK ({s['gk'][0]['real_power']:.1f}): " + s['gk'][0]['name'])
+            st.write(f"**DEF ({opp_stats['def']:.1f}):** {', '.join([p['name'] for p in s['def']])}")
+            st.write(f"**MID ({opp_stats['mid']:.1f}):** {', '.join([p['name'] for p in s['mid']])}")
+            st.write(f"**ATT ({opp_stats['att']:.1f}):** {', '.join([p['name'] for p in s['att']])}")
+            if s['gk']: 
+                st.caption(f"GK ({s['gk'][0]['real_power']:.1f}): " + s['gk'][0]['name'])
 
-        st.divider()
-        st.subheader("🤖 ШІ-Оптимізатор (Monte Carlo Brute-Force)")
-        st.write("Просимулювати всі можливі комбінації, щоб знайти 100% ідеальну тактику?")
+            st.divider()
+            st.subheader("🤖 ШІ-Оптимізатор (Monte Carlo Brute-Force)")
+            st.write("Просимулювати всі можливі комбінації, щоб знайти 100% ідеальну тактику?")
         
-        # ==========================================
-        # НАЛАШТУВАННЯ СИМУЛЯТОРА
-        # ==========================================
-        st.markdown("---")
-        st.subheader("⚙️ Режим симуляції")
+            # ==========================================
+            # НАЛАШТУВАННЯ СИМУЛЯТОРА
+            # ==========================================
+            st.markdown("---")
+            st.subheader("⚙️ Режим симуляції")
 
-        # --- ПОЧАТОК НОВОГО БЛОКУ ДЛЯ УДАРІВ ---
-        st.write("**Темп гри (Активність команд)**")
-        st.caption("Введіть середню кількість ударів за матч для кожної команди. Симулятор сам вирахує кількість ігрових епізодів.")
+            # --- ПОЧАТОК НОВОГО БЛОКУ ДЛЯ УДАРІВ ---
+            st.write("**Темп гри (Активність команд)**")
+            st.caption("Введіть середню кількість ударів за матч для кожної команди. Симулятор сам вирахує кількість ігрових епізодів.")
         
-        col1, col2 = st.columns(2)
-        with col1:
-            my_shots = st.number_input("Ваші середні удари:", min_value=1, max_value=30, value=5, step=1)
-        with col2:
-            opp_shots = st.number_input("Удари суперника:", min_value=1, max_value=30, value=5, step=1)
+            col1, col2 = st.columns(2)
+            with col1:
+                my_shots = st.number_input("Ваші середні удари:", min_value=1, max_value=30, value=5, step=1)
+            with col2:
+                opp_shots = st.number_input("Удари суперника:", min_value=1, max_value=30, value=5, step=1)
             
-        expected_total_shots = my_shots + opp_shots
-        min_chances = int(expected_total_shots * 0.83)
-        max_chances = int(expected_total_shots * 1.19)
+            expected_total_shots = my_shots + opp_shots
+            min_chances = int(expected_total_shots * 0.83)
+            max_chances = int(expected_total_shots * 1.19)
         
-        st.info(f"📊 Розрахований діапазон для рушія: від **{min_chances}** до **{max_chances}** ігрових епізодів.")
+            st.info(f"📊 Розрахований діапазон для рушія: від **{min_chances}** до **{max_chances}** ігрових епізодів.")
 
-        st.markdown("---")
-        st.write("**⚠️ Дисципліна (Середні порушення за матч)**")
-        col_foul1, col_foul2 = st.columns(2)
-        with col_foul1:
-            my_fouls_input = st.number_input("Наші порушення:", min_value=0, value=3, step=1)
-        with col_foul2:
-            opp_fouls_input = st.number_input("Порушення суперника:", min_value=0, value=3, step=1)
+            st.markdown("---")
+            st.write("**⚠️ Дисципліна (Середні порушення за матч)**")
+            col_foul1, col_foul2 = st.columns(2)
+            with col_foul1:
+                my_fouls_input = st.number_input("Наші порушення:", min_value=0, value=3, step=1)
+            with col_foul2:
+                opp_fouls_input = st.number_input("Порушення суперника:", min_value=0, value=3, step=1)
 
-        if st.button("🚀 Запустити Симуляцію", type="primary"):
-            with st.spinner("Граємо віртуальні матчі... Це може зайняти деякий час ⏳"):
+            if st.button("🚀 Запустити Симуляцію", type="primary"):
+                with st.spinner("Граємо віртуальні матчі... Це може зайняти деякий час ⏳"):
                 
-                my_eng, opp_eng, _, _ = lg.prepare_engine_stats(my_team_stats, opp_stats, i_am_home, opponent_home)
+                    my_eng, opp_eng, _, _ = lg.prepare_engine_stats(my_team_stats, opp_stats, i_am_home, opponent_home)
                 
-                if my_eng['possession'] == 0 or my_eng['shot_power'] == 0:
-                    st.error(f"🚨 КРИТИЧНА ПОМИЛКА: Скіли гравців = 0! Парсер не зміг зайти в профілі.")
-                    st.stop()
+                    if my_eng['possession'] == 0 or my_eng['shot_power'] == 0:
+                        st.error(f"🚨 КРИТИЧНА ПОМИЛКА: Скіли гравців = 0! Парсер не зміг зайти в профілі.")
+                        st.stop()
                 
-                if "коммерч" in tourn_input.lower():
-                    tourn_coef = 0.5
+                    if "коммерч" in tourn_input.lower():
+                        tourn_coef = 0.5
+                    else:
+                        tourn_coef = 1.0
+
+                    # [ВИПРАВЛЕНО] Завжди використовуємо Тотальний Аналіз (1080 комбінацій)
+                    st.warning("⚠️ ШІ прораховує 1080 ваших комбінацій проти 1080 можливих тактик суперника. Зачекайте...")
+                
+                    optimizer = me.TacticsOptimizer(
+                        my_eng, opp_eng, 
+                        opp_tactics_input=None, # None означає, що ШІ тестує проти всіх 1080 варіантів
+                        min_c=min_chances, max_c=max_chances, 
+                        tourn_coef=tourn_coef, 
+                        my_fouls_avg=my_fouls_input, opp_fouls_avg=opp_fouls_input
+                    )
+
+                    # Запуск Монте-Карло
+                    top_tactics = optimizer.find_best_tactic()
+                
+                    # ==========================================
+                    # ВИВІД РЕЗУЛЬТАТІВ ТОП-3
+                    # ==========================================
+                    cols = st.columns(3)
+                    for i, res in enumerate(top_tactics):
+                        with cols[i]:
+                            c = res['combo']
+                            st.info(f"🏆 {i+1} МІСЦЕ\n\n**Шанс перемоги: {res['winrate']:.1f}%**")
+                            st.markdown(f"🎯 **Прогноз рахунку: {res.get('most_likely_score', '0:0')}** *(ймовірність {res.get('score_prob', 0):.0f}%)*")
+                            st.write(f"**Паси:** {c['pass_type']}")
+                            st.write(f"**Стратегія:** {c['strat']}")
+                            st.write(f"**Пресинг:** {c['press']}")
+                            st.write(f"**В лінію:** {c['dens_in']}")
+                            st.write(f"**Між лініями:** {c['dens_btwn']}")
+                            st.write(f"**Тактика:** {c['tactic_val']}")
+                            st.caption(f"Середні забиті голи: {res['avg_goals']:.2f}")
+
+
+# ==============================================================================
+# ПІДБІР СКЛАДУ ПІД ЛІМІТ
+# ==============================================================================
+with tab_lineup:
+    st.header("🧩 Підбір складу під ліміт")
+    st.caption("Обов'язкових гравців ставимо у склад, решту скрипт добирає так, щоб сума номіналу була "
+               "якомога ближчою до ліміту, але не перевищувала його.")
+
+    if not st.session_state.my_roster:
+        st.warning("Спочатку завантажте свою команду.")
+    else:
+        lineup_roster = st.session_state.my_roster
+        lineup_available = [p for p in lineup_roster if not p.get('is_injured')]
+        injured_names = [p['name'] for p in lineup_roster if p.get('is_injured')]
+
+        def lineup_label(player):
+            return f"{player['name']} [{'/'.join(player['pos'])} | Nom:{player['nominal_power']:.2f}]"
+
+        col_form, col_cap = st.columns([2, 1])
+        with col_form:
+            lineup_formation = st.selectbox("Схема:", ["Авто (підібрати найкращу)"] + list(lg.ALL_FORMATIONS.keys()), key="auto_formation")
+        with col_cap:
+            st.metric("Ліміт сили (Cap)", f"{cap_input}")
+
+        must_players = st.multiselect("Обов'язково у складі:", lineup_available, format_func=lineup_label, key="auto_must")
+        must_names = [p['name'] for p in must_players]
+        banned_players = st.multiselect("Не брати:", [p for p in lineup_available if p['name'] not in must_names],
+                                        format_func=lineup_label, key="auto_banned")
+        if injured_names:
+            st.caption("Травмовані не беруться автоматично: " + ", ".join(injured_names))
+
+        if st.button("🧮 Підібрати склад", type="primary"):
+            if not cap_input:
+                st.error("Вкажіть ліміт сили (Cap) у бічній панелі.")
+            else:
+                with st.spinner("Підбираємо склад..."):
+                    proposal = lg.propose_my_lineup(lineup_roster, lineup_formation, cap_input,
+                                                    must_names, [p['name'] for p in banned_players])
+                    proposal['forced'] = must_names
+                    st.session_state.auto_lineup = proposal
+                    st.session_state.pop('auto_applied', None)
+
+        proposal = st.session_state.get('auto_lineup')
+        if proposal:
+            result = proposal['result']
+            if result is None:
+                st.error(proposal['reason'])
+            else:
+                if proposal['dropped']:
+                    st.warning("Усіх обов'язкових гравців вмістити неможливо, тому пропоную свій склад. "
+                               f"{proposal['reason']}\n\nНе потрапили: {', '.join(proposal['dropped'])}.")
                 else:
-                    tourn_coef = 1.0
+                    st.success("Склад підібрано: усі обов'язкові гравці включені.")
 
-                # [ВИПРАВЛЕНО] Завжди використовуємо Тотальний Аналіз (1080 комбінацій)
-                st.warning("⚠️ ШІ прораховує 1080 ваших комбінацій проти 1080 можливих тактик суперника. Зачекайте...")
-                
-                optimizer = me.TacticsOptimizer(
-                    my_eng, opp_eng, 
-                    opp_tactics_input=None, # None означає, що ШІ тестує проти всіх 1080 варіантів
-                    min_c=min_chances, max_c=max_chances, 
-                    tourn_coef=tourn_coef, 
-                    my_fouls_avg=my_fouls_input, opp_fouls_avg=opp_fouls_input
-                )
+                remaining = round(cap_input - result['nominal'], 2)
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Номінал (Cap)", f"{result['nominal']:.2f}", f"залишок {remaining:.2f}", delta_color="off")
+                m2.metric("Схема", proposal['formation'])
+                m3.metric("Real Power", f"{result['real_total']:.1f}")
+                m4.metric("Обов'язкових у складі", f"{len(proposal['forced']) - len(proposal['dropped'])}/{len(proposal['forced'])}")
 
-                # Запуск Монте-Карло
-                top_tactics = optimizer.find_best_tactic()
-                
-                # ==========================================
-                # ВИВІД РЕЗУЛЬТАТІВ ТОП-3
-                # ==========================================
-                cols = st.columns(3)
-                for i, res in enumerate(top_tactics):
-                    with cols[i]:
-                        c = res['combo']
-                        st.info(f"🏆 {i+1} МІСЦЕ\n\n**Шанс перемоги: {res['winrate']:.1f}%**")
-                        st.markdown(f"🎯 **Прогноз рахунку: {res.get('most_likely_score', '0:0')}** *(ймовірність {res.get('score_prob', 0):.0f}%)*")
-                        st.write(f"**Паси:** {c['pass_type']}")
-                        st.write(f"**Стратегія:** {c['strat']}")
-                        st.write(f"**Пресинг:** {c['press']}")
-                        st.write(f"**В лінію:** {c['dens_in']}")
-                        st.write(f"**Між лініями:** {c['dens_btwn']}")
-                        st.write(f"**Тактика:** {c['tactic_val']}")
-                        st.caption(f"Середні забиті голи: {res['avg_goals']:.2f}")
+                line_titles = {'gk': 'GK', 'def': 'DEF', 'mid': 'MID', 'att': 'ATT'}
+                table_rows = []
+                for line, title in line_titles.items():
+                    for p in result['squad_dict'][line]:
+                        table_rows.append({
+                            'Лінія': title, 'Гравець': p['name'], 'Позиції': '/'.join(p['pos']),
+                            'Номінал': round(p['nominal_power'], 2), 'Real': round(p['real_power'], 1),
+                            "Обов'язковий": '✅' if p['name'] in proposal['forced'] and p['name'] not in proposal['dropped'] else ''
+                        })
+                st.dataframe(pd.DataFrame(table_rows), hide_index=True)
+
+                st.button("✅ Застосувати до конструктора", on_click=apply_auto_lineup)
+                if st.session_state.get('auto_applied'):
+                    st.success("Склад перенесено в конструктор на вкладці «Аналіз і симуляція».")
