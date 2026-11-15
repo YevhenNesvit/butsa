@@ -5,6 +5,7 @@ import pandas as pd
 from fetcher import scrape_roster
 import tactics_logic as lg  # Імпортуємо оновлений модуль логіки
 import match_engine as me
+import growth as gr
 
 # ==============================================================================
 # НАЛАШТУВАННЯ
@@ -71,7 +72,7 @@ with st.sidebar:
 # ОСНОВНИЙ ЕКРАН
 # ==============================================================================
 
-tab_analysis, tab_lineup = st.tabs(["🧠 Аналіз і симуляція", "🧩 Підбір складу"])
+tab_analysis, tab_lineup, tab_growth = st.tabs(["🧠 Аналіз і симуляція", "🧩 Підбір складу", "📈 Ріст гравців"])
 
 
 def apply_auto_lineup():
@@ -412,3 +413,107 @@ with tab_lineup:
                 st.button("✅ Застосувати до конструктора", on_click=apply_auto_lineup)
                 if st.session_state.get('auto_applied'):
                     st.success("Склад перенесено в конструктор на вкладці «Аналіз і симуляція».")
+
+
+# ==============================================================================
+# ПРОГНОЗ РОСТУ МАЙСТЕРНОСТІ ПО РОКАХ
+# ==============================================================================
+with tab_growth:
+    st.header("📈 Ріст майстерності по роках")
+    st.caption("Формула з скрипту beScript: тренування, очки досвіду, старіння. Введіть гравців і оберіть, "
+               "на який вік показати майстерність.")
+
+    growth_cols = ['Видалити', 'Гравець', 'Вік', 'Позиція', 'Майстерність', 'Талант', 'Рівень досвіду', 'Очки досвіду', 'Особливість'] \
+        + [gr.SKILL_NAMES[s] for s in gr.SKILLS]
+
+    if 'growth_df' not in st.session_state:
+        st.session_state.growth_df = pd.DataFrame([{
+            'Видалити': False, 'Гравець': 'Тест', 'Вік': 18, 'Позиція': 'MID', 'Майстерність': 40.0, 'Талант': 5,
+            'Рівень досвіду': 0, 'Очки досвіду': 0, 'Особливість': '', **{gr.SKILL_NAMES[s]: 5.0 for s in gr.SKILLS}
+        }], columns=growth_cols)
+
+    def fill_growth_from_roster():
+        """Переносимо вік, майстерність і уміння з завантаженої команди (талант, досвід, особливість читаються з профілю)"""
+        skill_map = {'tckl': 'Отбор', 'mrk': 'Опека', 'drbl': 'Дриблинг', 'brcv': 'Прием мяча',
+                     'edrnc': 'Выносливость', 'pass': 'Пас', 'shotPwr': 'Сила удара', 'shotAcc': 'Точность удара'}
+        rows = []
+        for p in st.session_state.my_roster:
+            pos = p['pos'][0] if p['pos'] else 'MID'
+            g = p.get('growth') or {}
+            line = 'GK' if pos == 'GK' else ('DEF' if pos in ('DEF', 'SW', 'LD', 'CD', 'RD', 'LWD', 'RWD', 'DM')
+                                             else ('ATT' if pos in ('LF', 'CF', 'RF') else 'MID'))
+            row = {'Видалити': False, 'Гравець': p['name'], 'Вік': p.get('age') or 18, 'Позиція': line, 'Майстерність': float(p['power']),
+                   'Талант': g.get('talent') or 5, 'Рівень досвіду': g.get('exp_level') or 0,
+                   'Очки досвіду': g.get('exp_points') or 0,
+                   'Особливість': g.get('uniq') or ''}
+            for s in gr.SKILLS:
+                row[gr.SKILL_NAMES[s]] = float(p.get('skills', {}).get(skill_map[s], 10.0))
+            if line == 'GK':
+                # у воротаря одне уміння «Голкиперство»: у скрипті воно береться як перше (Відбір)
+                row[gr.SKILL_NAMES['tckl']] = float(p.get('skills', {}).get('Голкиперство', p['power']))
+            rows.append(row)
+        if rows:
+            st.session_state.growth_df = pd.DataFrame(rows, columns=growth_cols)
+            st.session_state.pop('growth_editor', None)
+
+    st.button("⬇️ Підтягнути гравців з моєї команди", on_click=fill_growth_from_roster,
+              disabled=not st.session_state.my_roster,
+              help="Переносить вік, майстерність і уміння. Талант, досвід і особливість беруться з профілю гравця.")
+
+    edited = st.data_editor(
+        st.session_state.growth_df, num_rows="dynamic", key="growth_editor", hide_index=True,
+        column_config={
+            'Видалити': st.column_config.CheckboxColumn(width="small", help="Позначте гравців, чий ріст не цікавить, і натисніть «Видалити позначених»"),
+            'Позиція': st.column_config.SelectboxColumn(options=['GK', 'DEF', 'MID', 'ATT'], required=True),
+            'Особливість': st.column_config.TextColumn(help="На формулу впливають лише Профильный, Работяга і Долгожитель; інші просто показуються"),
+            'Вік': st.column_config.NumberColumn(min_value=14, max_value=45, step=1),
+            'Талант': st.column_config.NumberColumn(min_value=1, max_value=15, step=1),
+            'Рівень досвіду': st.column_config.NumberColumn(min_value=0, step=1),
+            'Очки досвіду': st.column_config.NumberColumn(min_value=0, step=1),
+        })
+    if st.button("🗑 Видалити позначених гравців"):
+        kept = edited[~edited['Видалити'].fillna(False).astype(bool)]
+        st.session_state.growth_df = kept.reset_index(drop=True)
+        st.session_state.pop('growth_editor', None)
+        st.rerun()
+    st.caption("Воротар: у колонці «Відбір» вводиться уміння воротаря (голкіпер), решта умінь ігноруються.")
+
+    with st.expander("⚙️ Параметри тренувань", expanded=True):
+        c1, c2, c3, c4 = st.columns(4)
+        coach_young = c1.number_input("Прибавка тренера мол. (%)", 0.0, 100.0, 15.0, 0.5)
+        coach_adult = c2.number_input("Прибавка тренера взр. (%)", 0.0, 100.0, 15.0, 0.5)
+        exp_gain = c3.number_input("Очок досвіду за сезон", 0, 20000, 2700, 100,
+                                   help="2700 — чемпіонат, 1944 — товариські, 4644 — обидва, 0 — не грає")
+        trains_done = c4.number_input("Тренувань вже проведено в сезоні", 0, 126, 0, 1)
+        c5, c6, c7 = st.columns(3)
+        home_bonus = c5.checkbox("Бонус рідної команди (7.5%)", value=False)
+        regime = c6.selectbox("Режим тренувань", list(gr.REGIMES), format_func=gr.REGIMES.get, index=0)
+        uniform_target = c7.number_input("Ціль кожного уміння (всі по)", 1.0, 40.0, 20.0, 0.5)
+        target_ages = st.multiselect("Показати майстерність у віці:", list(range(15, 41)), default=[20, 22, 24, 26, 28, 30, 32])
+
+    if st.button("📈 Порахувати ріст", type="primary"):
+        results = []
+        for _, row in edited.iterrows():
+            if not str(row['Гравець']).strip() or pd.isna(row['Вік']):
+                continue
+            player = {
+                'age': int(row['Вік']), 'line': row['Позиція'], 'power': float(row['Майстерність']),
+                'skills': {s: float(row[gr.SKILL_NAMES[s]]) for s in gr.SKILLS},
+                'talent': int(row['Талант']), 'exp_level': int(row['Рівень досвіду']),
+                'exp_points': float(row['Очки досвіду']), 'uniq': row['Особливість'] or '',
+            }
+            by_age = gr.project_growth(player, target_ages, {
+                'coach_young': coach_young, 'coach_adult': coach_adult, 'home_bonus': home_bonus,
+                'exp_gain': exp_gain, 'regime': regime, 'trains_done': int(trains_done),
+                'targets': {s: uniform_target for s in gr.SKILLS},
+            })
+            res = {'Гравець': row['Гравець'], 'Зараз': round(player['power'], 2),
+                   'Зараз талант': round(gr.calc_talent(player['talent'], player['exp_level']), 1)}
+            for a in sorted(target_ages):
+                res[f'{a} р.'] = round(by_age[a][0], 2) if a in by_age else None
+                res[f'{a} р. талант'] = round(by_age[a][1], 1) if a in by_age else None
+            results.append(res)
+        if results:
+            st.dataframe(pd.DataFrame(results), hide_index=True)
+        else:
+            st.info("Додайте хоча б одного гравця з іменем.")
