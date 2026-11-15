@@ -43,7 +43,7 @@ def parse_player_details(player_url, cookie, target_tournament, session=None):
     bonuses = {}
     skills = {}
 
-    if not soup: return 0, {}, {}, None
+    if not soup: return 0, {}, {}, None, {}
 
     # --- 1. ПАРСИНГ ХВИЛИН ---
     season_header = soup.find(string=re.compile("Текущий сезон"))
@@ -109,7 +109,25 @@ def parse_player_details(player_url, cookie, target_tournament, session=None):
                 except ValueError:
                     mastery = None
 
-    return minutes, bonuses, skills, mastery
+    # --- 5. ДАНІ ДЛЯ ПРОГНОЗУ РОСТУ: талант, досвід, особливість ---
+    def first_cell(label):
+        td = soup.find('td', string=re.compile(rf'^\s*{label}\s*$'))
+        row = td.find_parent('tr') if td else None
+        cells = row.find_all('td') if row else []
+        return cells[1].get_text(' ', strip=True) if len(cells) >= 2 else ''
+
+    def first_int(text):
+        m = re.search(r'\d+', text)
+        return int(m.group()) if m else None
+
+    growth = {
+        'talent': first_int(first_cell('Талант')),
+        'exp_level': first_int(first_cell('Уровень опыта')),
+        'exp_points': first_int(first_cell('Опыт')),
+        'uniq': first_cell('Особенность'),
+    }
+
+    return minutes, bonuses, skills, mastery, growth
 
 
 def scrape_roster(url, cookie, tournament_name, progress_callback=None):
@@ -174,7 +192,7 @@ def scrape_roster(url, cookie, tournament_name, progress_callback=None):
         (name, clean_pos, p_val, s_val, mor_val, is_injured, age), href = item
         try:
             # [ЗМІНЕНО] Тепер розпаковуємо 4 змінні (включаючи skills і точне майстерство)
-            mins, bonuses, skills, mastery = parse_player_details(href, cookie, tournament_name, session)
+            mins, bonuses, skills, mastery, growth = parse_player_details(href, cookie, tournament_name, session)
             time.sleep(0.1)
         except Exception:
             return None
@@ -191,7 +209,8 @@ def scrape_roster(url, cookie, tournament_name, progress_callback=None):
             "minutes": mins,
             "is_injured": is_injured,
             "bonuses": bonuses,
-            "skills": skills  # <--- Додали уміння
+            "skills": skills,  # <--- Додали уміння
+            "growth": growth
         }
 
     # map зберігає порядок гравців, як у ростері
